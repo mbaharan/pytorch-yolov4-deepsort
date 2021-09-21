@@ -12,7 +12,7 @@ __all__ = ['DeepSort']
 
 
 class DeepSort(object):
-    def __init__(self, model_path, max_dist=0.2, \
+    def __init__(self, model_path, namesfile, max_dist=0.2, \
                 min_confidence=0.3, nms_max_overlap=1.0, max_iou_distance=0.7,\
                 max_age=70, n_init=3, nn_budget=100, use_cuda=True):
         self.min_confidence = min_confidence
@@ -24,8 +24,6 @@ class DeepSort(object):
         nn_budget = 100
         metric = NearestNeighborDistanceMetric("cosine", max_cosine_distance, nn_budget)
         self.tracker = Tracker(metric, max_iou_distance=max_iou_distance, max_age=max_age, n_init=n_init)
-        #----added by deyiwang
-        namesfile = '/media/deyiwang/3f3ddbf8-8bf1-44ae-b725-2a349adc7d8f/sth_4_1/pytorch-yolov4-deepsort/detector/YOLOV4/model_data/coco_classes.txt'
         self.class_names = self.load_class_names(namesfile)
         # print(type(self.class_names)) #---list
 
