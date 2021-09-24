@@ -64,7 +64,7 @@ class Track:
     """
 
     def __init__(self, mean, covariance, track_id, n_init, max_age,
-                 feature=None):
+                 feature=None, cls_id=None):
         self.mean = mean
         self.covariance = covariance
         self.track_id = track_id
@@ -79,6 +79,7 @@ class Track:
 
         self._n_init = n_init
         self._max_age = max_age
+        self.cls_id = cls_id
 
     def to_tlwh(self):
         """Get current position in bounding box format `(top left x, top left y,
@@ -164,3 +165,7 @@ class Track:
     def is_deleted(self):
         """Returns True if this track is dead and should be deleted."""
         return self.state == TrackState.Deleted
+
+    def get_cls_id(self):
+        """Returns the class id of this track"""
+        return self.cls_id
