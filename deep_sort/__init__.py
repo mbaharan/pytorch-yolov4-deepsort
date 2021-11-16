@@ -6,9 +6,9 @@ __all__ = ['DeepSort', 'build_tracker']
 
 def build_tracker(args, use_cuda):
     return DeepSort(args.ds_model_path, namesfile=args.yolo_classes_path,  # namesfile=cfg.DEEPSORT.CLASS_NAMES,
-                    max_dist=0.2, min_confidence=0.1,
-                    nms_max_overlap=0.5, max_iou_distance=0.7,
-                    max_age=70, n_init=3, nn_budget=100, use_cuda=True)
+                    max_dist=args.max_dist, min_confidence=args.min_confidence,
+                    nms_max_overlap=args.nms_max_overlap, max_iou_distance=args.max_iou_distance,
+                    max_age=args.max_age, n_init=args.n_init, nn_budget=args.nn_budget, use_cuda=True)
 
 
 # def build_tracker(cfg, use_cuda):

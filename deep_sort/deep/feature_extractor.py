@@ -5,17 +5,25 @@ import cv2
 import logging
 
 from .model import Net
+from .osnet import osnet_x1_0
+from .utilsss import load_pretrained_weights
 
 class Extractor(object):
-    def __init__(self, model_path, use_cuda=True):
-        self.net = Net(reid=True)
+    def __init__(self, model_path, use_cuda=True, use_osnet=True):
         self.device = "cuda" if torch.cuda.is_available() and use_cuda else "cpu"
-        state_dict = torch.load(model_path, map_location=lambda storage, loc: storage)['net_dict']
-        self.net.load_state_dict(state_dict)
+        if use_osnet:
+            self.net = osnet_x1_0()
+            load_pretrained_weights(self.net, model_path)
+            self.size = (128, 256)
+        else:
+            self.net = Net(reid=True)
+            #self.device = "cuda" if torch.cuda.is_available() and use_cuda else "cpu"
+            state_dict = torch.load(model_path, map_location=lambda storage, loc: storage)['net_dict']
+            self.net.load_state_dict(state_dict)
+            self.size = (64, 128)
         logger = logging.getLogger("root.tracker")
         logger.info("Loading weights from {}... Done!".format(model_path))
         self.net.to(self.device)
-        self.size = (64, 128)
         self.norm = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
@@ -52,4 +60,3 @@ class Extractor(object):
 #     extr = Extractor("checkpoint/ckpt.t7")
 #     feature = extr(img)
     # print(feature.shape)
-
