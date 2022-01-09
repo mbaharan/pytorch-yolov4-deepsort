@@ -1,0 +1,14 @@
+
+*.tar-120
+*.tar-100
+weights/
+*.pyc
+tmp/
+output*/
+outputs/
+*.log
+*.jpg
+*.jpeg
+runMe_*.sh
+savePersonCorps_*.sh
+*.pyc
