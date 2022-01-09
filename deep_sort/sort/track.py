@@ -169,3 +169,6 @@ class Track:
     def get_cls_id(self):
         """Returns the class id of this track"""
         return self.cls_id
+
+    async def communicate(self, cmd):
+        pass
