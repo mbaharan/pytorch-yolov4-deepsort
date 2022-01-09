@@ -12,3 +12,5 @@ outputs/
 runMe_*.sh
 savePersonCorps_*.sh
 *.pyc
+**/*.pyc
+**/*.*.pyc
