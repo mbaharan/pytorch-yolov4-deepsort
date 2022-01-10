@@ -1,6 +1,8 @@
 # vim: expandtab:ts=4:sw=4
 from __future__ import absolute_import
 import numpy as np
+import asyncio
+from threading import Thread
 from . import kalman_filter
 from . import linear_assignment
 from . import iou_matching
@@ -47,6 +49,14 @@ class Tracker:
         self.kf = kalman_filter.KalmanFilter()
         self.tracks = []
         self._next_id = 1
+        self.event_loop = asyncio.new_event_loop()
+        self._thread_event_loop = Thread(target=self._run_comm_async)
+        self._thread_event_loop.start()
+
+    def _run_comm_async(self):
+        asyncio.set_event_loop(self.event_loop)
+        self.event_loop.run_forever()
+        self._thread_event_loop.join()
 
     def predict(self):
         """Propagate track state distributions one time step forward.
@@ -140,7 +150,10 @@ class Tracker:
 
     def _initiate_track(self, detection):
         mean, covariance = self.kf.initiate(detection.to_xyah())
-        self.tracks.append(Track(
-            mean, covariance, self._next_id, self.n_init, self.max_age,
-            detection.feature, detection.cls_id))
+    
+        track = Track(
+            mean, covariance, self._next_id, self.n_init, self.max_age, self.event_loop,
+            detection.feature, detection.cls_id)
+            
+        self.tracks.append(track)
         self._next_id += 1

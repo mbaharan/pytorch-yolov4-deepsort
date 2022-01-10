@@ -1,5 +1,18 @@
 # vim: expandtab:ts=4:sw=4
 
+import asyncio
+import random
+
+
+class Command:
+    """
+    Command for communication function. `FETCH` will intract with server to receive the global ID.
+    `Update` will send a new feature to the server to update its feature pool.
+    """
+
+    FETCH = 1
+    UPDATE = 2
+
 
 class TrackState:
     """
@@ -63,8 +76,17 @@ class Track:
 
     """
 
-    def __init__(self, mean, covariance, track_id, n_init, max_age,
-                 feature=None, cls_id=None):
+    def __init__(
+        self,
+        mean,
+        covariance,
+        track_id,
+        n_init,
+        max_age,
+        event_loop,
+        feature=None,
+        cls_id=None,
+    ):
         self.mean = mean
         self.covariance = covariance
         self.track_id = track_id
@@ -80,6 +102,13 @@ class Track:
         self._n_init = n_init
         self._max_age = max_age
         self.cls_id = cls_id
+
+        self._cmd_queue = asyncio.Queue()
+
+        asyncio.run_coroutine_threadsafe(self.communicate(), event_loop)
+
+    def _set_track_id(self, track_id):
+        self.track_id = track_id
 
     def to_tlwh(self):
         """Get current position in bounding box format `(top left x, top left y,
@@ -137,7 +166,8 @@ class Track:
 
         """
         self.mean, self.covariance = kf.update(
-            self.mean, self.covariance, detection.to_xyah())
+            self.mean, self.covariance, detection.to_xyah()
+        )
         self.features.append(detection.feature)
 
         self.hits += 1
@@ -146,16 +176,14 @@ class Track:
             self.state = TrackState.Confirmed
 
     def mark_missed(self):
-        """Mark this track as missed (no association at the current time step).
-        """
+        """Mark this track as missed (no association at the current time step)."""
         if self.state == TrackState.Tentative:
             self.state = TrackState.Deleted
         elif self.time_since_update > self._max_age:
             self.state = TrackState.Deleted
 
     def is_tentative(self):
-        """Returns True if this track is tentative (unconfirmed).
-        """
+        """Returns True if this track is tentative (unconfirmed)."""
         return self.state == TrackState.Tentative
 
     def is_confirmed(self):
@@ -170,5 +198,14 @@ class Track:
         """Returns the class id of this track"""
         return self.cls_id
 
-    async def communicate(self, cmd):
-        pass
+    async def communicate(self):
+        while True:
+            sleep_time = random.randint(0, 10)
+            print(
+                "Track {} is going to sleep for {} second(s)".format(
+                    self.track_id, sleep_time
+                )
+            )
+            await asyncio.sleep(sleep_time)
+            # cmd = await self._cmd_queue.get()
+            pass

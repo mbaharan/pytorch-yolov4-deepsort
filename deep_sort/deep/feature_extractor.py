@@ -15,6 +15,7 @@ class Extractor(object):
             self.net = osnet_x1_0()
             load_pretrained_weights(self.net, model_path)
             self.size = (128, 256)
+            self.net.eval()
         else:
             self.net = Net(reid=True)
             #self.device = "cuda" if torch.cuda.is_available() and use_cuda else "cpu"
