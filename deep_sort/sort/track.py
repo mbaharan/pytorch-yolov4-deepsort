@@ -1,13 +1,16 @@
 # vim: expandtab:ts=4:sw=4
 
-import asyncio
+#import asyncio
+from distutils import command
 import zlib
-import aiohttp
-import asyncio
+import requests
+#import asyncio
 import ujson
 import numpy as np
 import io
-from .queue import Queue
+from threading import Thread
+from queue import Queue
+#from .queue import Queue
 
 
 class Command:
@@ -18,12 +21,21 @@ class Command:
 
     FETCH = 1
     UPDATE = 2
+    STOP = 3
 
     def __init__(self, cmd_type, feature) -> None:
         self.cmd_type = cmd_type
         self.feature = feature
         self.cmp_feature = None
         self.response = None
+
+    def __str__(self) -> str:
+        cmd_type = 'Update' 
+        if self.cmd_type == 2:
+            cmd_type = 'FETCH'
+        else:
+            cmd_type = 'STOP'
+        return 'Type: {}'.format(cmd_type)
 
 
 class TrackState:
@@ -95,7 +107,6 @@ class Track:
         track_id,
         n_init,
         max_age,
-        event_loop,
         feature=None,
         cls_id=None,
         client_cfg=None
@@ -119,10 +130,17 @@ class Track:
 
         self.client_cfg = client_cfg
 
-        self.event_loop = event_loop
+        self._queue_comm = Queue(self.client_cfg.Budget)
+        self._queue_comm.put_nowait(Command(Command.FETCH, feature))
 
-        asyncio.run_coroutine_threadsafe(self.communicate(
-            Command(Command.FETCH, feature)), event_loop)
+        self._run_thread = True
+        self._thread_comm = Thread(target=self.communicate)
+        self._thread_comm.start()
+
+        #self.event_loop = event_loop
+
+        # asyncio.run_coroutine_threadsafe(self.communicate(
+        #    ), event_loop)
 
         # self._cmd_queue.put_nowait(
         #    Command(Command.FETCH, feature)
@@ -195,7 +213,7 @@ class Track:
                 # I know it sounds crazy, but this the way to comm between two worlds of
                 # async and sync worlds
                 if (self.hits % self.client_cfg.Budget) == 0:
-                    self._cmd_queue.sync_put(
+                    self._queue_comm.put_nowait(
                         Command(Command.UPDATE, detection.feature))
         except Exception as e:
             print(str(e))
@@ -205,13 +223,27 @@ class Track:
         if self.state == TrackState.Tentative and self.hits >= self._n_init:
             self.state = TrackState.Confirmed
 
+    def _stop_comm_thread(self):
+        print('x> Stopping thread for track {}'.format(self.track_id))
+        self._run_thread = False
+        self._queue_comm.put_nowait(Command(Command.STOP, None))
+        '''
+         while self._queue_comm.not_empty:
+             print("x> Skipped command `{}` for Track: {}".format(
+                 self.track_id, self._queue_comm.get_nowait()))
+        '''
+        self._queue_comm.task_done()
+        self._queue_comm.join()
+        self._thread_comm.join()
+
     def mark_missed(self):
         """Mark this track as missed (no association at the current time step)."""
         if self.state == TrackState.Tentative:
             self.state = TrackState.Deleted
+            self._stop_comm_thread()
         elif self.time_since_update > self._max_age:
             self.state = TrackState.Deleted
-
+            self._stop_comm_thread()
     def is_tentative(self):
         """Returns True if this track is tentative (unconfirmed)."""
         return self.state == TrackState.Tentative
@@ -228,100 +260,63 @@ class Track:
         """Returns the class id of this track"""
         return self.cls_id
 
-    async def compress_nparr(self):  # nparr):
+    def compress_nparr(self, cmd):  # nparr):
         """
         Returns the given numpy array as compressed bytestring,
         the uncompressed and the compressed byte size.
         """
-        while True:
-            cmd = await self._cmd_queue.async_get()
-            bytestream = io.BytesIO()
-            nparr = cmd.feature
-            np.save(bytestream, nparr)
-            uncompressed = bytestream.getvalue()
-            cmd.cmp_feature = zlib.compress(uncompressed)
-            await self._queue_comp2post.async_put(cmd)
-            self._cmd_queue.async_task_done()
+        bytestream = io.BytesIO()
+        nparr = cmd.feature
+        np.save(bytestream, nparr)
+        uncompressed = bytestream.getvalue()
+        cmd.cmp_feature = zlib.compress(uncompressed)
+        return cmd
 
         # return compressed, len(uncompressed), len(compressed)
 
-    async def post_nparr(self):
-        while True:
-            cmd = await self._queue_comp2post.async_get()
-            print('Sending the data for track: {}'.format(self.track_id))
-            server_address = "http://" + self.client_cfg.Server_IP + \
-                ":" + str(self.client_cfg.Server_Socket)
-            if cmd.cmd_type == Command.UPDATE:
-                url = "{}/{}?cam_id={}&track_id={}&global_id={}".format(server_address,
-                                                                        self.client_cfg.Update_URL,
-                                                                        self.client_cfg.Camera_ID,
-                                                                        self.track_id, self.global_id)
-            elif cmd.cmd_type == Command.FETCH:
-                url = "{}/{}?cam_id={}&track_id={}".format(server_address,
-                                                           self.client_cfg.Fetch_URL,
-                                                           self.client_cfg.Camera_ID, self.track_id)
+    def post_nparr(self, cmd):
+        print('Sending the data for track: {}'.format(self.track_id))
+        server_address = "http://" + self.client_cfg.Server_IP + \
+            ":" + str(self.client_cfg.Server_Socket)
+        if cmd.cmd_type == Command.UPDATE:
+            url = "{}/{}?cam_id={}&track_id={}&global_id={}".format(server_address,
+                                                                    self.client_cfg.Update_URL,
+                                                                    self.client_cfg.Camera_ID,
+                                                                    self.track_id, self.global_id)
+        elif cmd.cmd_type == Command.FETCH:
+            url = "{}/{}?cam_id={}&track_id={}".format(server_address,
+                                                       self.client_cfg.Fetch_URL,
+                                                       self.client_cfg.Camera_ID, self.track_id)
 
-            async with aiohttp.ClientSession(json_serialize=ujson.dumps) as session:
-                try:
-                    async with session.post(
-                        url,
-                        data=cmd.cmp_feature,
-                        headers={"Content-Type": "application/octet-stream"},
-                    ) as response:
-                        # TODO: Fix the error handling and logging.
-                        cmd.response = await response.json()
-                        await self._queue_post2process.async_put(cmd)
-                        self._queue_comp2post.async_task_done()
-                except Exception as e:
-                    print("The error is : {}".format(str(e)))
+        with requests.Session() as session:  # json_serialize=ujson.dumps
+            try:
+                with session.post(
+                    url,
+                    data=cmd.cmp_feature,
+                    headers={"Content-Type": "application/octet-stream"},
+                ) as response:
+                    # TODO: Fix the error handling and logging.
+                    cmd.response = response.json()
+            except Exception as e:
+                print("The error is : {}".format(str(e)))
 
-    async def process_response(self):
-        while True:
-            cmd = await self._queue_post2process.async_get()
+        return cmd
+
+    def process_response(self, cmd):
+        if cmd.response is not None:
             if cmd.cmd_type == Command.FETCH or cmd.cmd_type == Command.UPDATE:
                 self._set_track_id(cmd.response['global_id'])
-            self._queue_post2process.async_task_done()
 
-    async def communicate(self, init_command):
+    def communicate(self):
         if self.client_cfg is not None:
-
-            cmp2post = [
-                self.event_loop.create_task(self.compress_nparr()) for _ in range(self.client_cfg.Worker_Size)
-            ]
-            post2process = [
-                self.event_loop.create_task(self.post_nparr()) for _ in range(self.client_cfg.Worker_Size)
-            ]
-
-            process = [
-                self.event_loop.create_task(
-                    self.process_response()
-                ) for _ in range(self.client_cfg.Worker_Size)
-            ]
-
-            self._cmd_queue = Queue(self.client_cfg.Budget)
-            self._queue_comp2post = Queue(self.client_cfg.Budget)
-            self._queue_post2process = Queue(self.client_cfg.Budget)
-
-            # Let's trigger the communication pipeline.
-            await self._cmd_queue.async_put(init_command)
-
-            # with both producers and consumers running, wait for
-            # the producers to finish
-
-            await asyncio.gather(*cmp2post, return_exceptions=True)
-
-            await asyncio.gather(*post2process, return_exceptions=True)
-
-            await asyncio.gather(*process, return_exceptions=True)
-
-            await self._cmd_queue.async_wait()
-            await self._queue_comp2post.async_wait()
-            await self._queue_post2process.async_wait()
-
-            # await self._cmd_queue.join()
-            # await self._queue_comp2post.join()
-            # await self._queue_post2process.join()
-
+            while True and self._run_thread:
+                cmd = self._queue_comm.get(block=True)
+                if cmd.cmd_type == Command.STOP:
+                    break
+                cmd = self.compress_nparr(cmd)
+                cmd = self.post_nparr(cmd)
+                self.process_response(cmd)
+                self._queue_comm.task_done()
         else:
             print("!> Client config is not set. System is based on local ReID for track:{}".format(
                 self.track_id))

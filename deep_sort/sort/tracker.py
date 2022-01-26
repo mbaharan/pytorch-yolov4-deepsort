@@ -2,7 +2,6 @@
 from __future__ import absolute_import
 import numpy as np
 import asyncio
-from threading import Thread
 from . import kalman_filter
 from . import linear_assignment
 from . import iou_matching
@@ -50,17 +49,16 @@ class Tracker:
         self.tracks = []
         self._next_id = 1
 
+        #self.event_loop = asyncio.new_event_loop()
+        #self._thread_event_loop = Thread(target=self._run_comm_async)
+        # self._thread_event_loop.start()
 
-        self.event_loop = asyncio.new_event_loop()
-        self._thread_event_loop = Thread(target=self._run_comm_async)
-        self._thread_event_loop.start()
-        
-        self.client_cfg=client_cfg
+        self.client_cfg = client_cfg
 
-    def _run_comm_async(self):
-        asyncio.set_event_loop(self.event_loop)
-        self.event_loop.run_forever()
-        self._thread_event_loop.join()
+    # def _run_comm_async(self):
+    #    asyncio.set_event_loop(self.event_loop)
+    #    self.event_loop.run_forever()
+    #    self._thread_event_loop.join()
 
     def predict(self):
         """Propagate track state distributions one time step forward.
@@ -109,7 +107,6 @@ class Tracker:
 
     def _match(self, detections):
 
-
         def gated_metric(tracks, dets, track_indices, detection_indices):
             # print("tracker.gated metric.dets",type(track_indices))
             features = np.array([dets[i].feature for i in detection_indices])
@@ -154,10 +151,9 @@ class Tracker:
 
     def _initiate_track(self, detection):
         mean, covariance = self.kf.initiate(detection.to_xyah())
-    
+
         track = Track(
-            mean, covariance, self._next_id, self.n_init, self.max_age, self.event_loop,
-            detection.feature, detection.cls_id, self.client_cfg)
-            
+            mean, covariance, self._next_id, self.n_init, self.max_age, detection.feature, detection.cls_id, self.client_cfg)
+
         self.tracks.append(track)
         self._next_id += 1
