@@ -39,7 +39,7 @@ class Tracker:
 
     """
 
-    def __init__(self, metric, max_iou_distance=0.7, max_age=70, n_init=3):
+    def __init__(self, metric, max_iou_distance=0.7, max_age=70, n_init=3, client_cfg=None):
         self.metric = metric
         # print("tracker.metric:=-=-=--=",self.metric)
         self.max_iou_distance = max_iou_distance
@@ -49,9 +49,13 @@ class Tracker:
         self.kf = kalman_filter.KalmanFilter()
         self.tracks = []
         self._next_id = 1
+
+
         self.event_loop = asyncio.new_event_loop()
         self._thread_event_loop = Thread(target=self._run_comm_async)
         self._thread_event_loop.start()
+        
+        self.client_cfg=client_cfg
 
     def _run_comm_async(self):
         asyncio.set_event_loop(self.event_loop)
@@ -153,7 +157,7 @@ class Tracker:
     
         track = Track(
             mean, covariance, self._next_id, self.n_init, self.max_age, self.event_loop,
-            detection.feature, detection.cls_id)
+            detection.feature, detection.cls_id, self.client_cfg)
             
         self.tracks.append(track)
         self._next_id += 1

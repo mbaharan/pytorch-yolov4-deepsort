@@ -1,7 +1,13 @@
 # vim: expandtab:ts=4:sw=4
 
 import asyncio
-import random
+import zlib
+import aiohttp
+import asyncio
+import ujson
+import numpy as np
+import io
+from .queue import Queue
 
 
 class Command:
@@ -12,6 +18,12 @@ class Command:
 
     FETCH = 1
     UPDATE = 2
+
+    def __init__(self, cmd_type, feature) -> None:
+        self.cmd_type = cmd_type
+        self.feature = feature
+        self.cmp_feature = None
+        self.response = None
 
 
 class TrackState:
@@ -86,10 +98,12 @@ class Track:
         event_loop,
         feature=None,
         cls_id=None,
+        client_cfg=None
     ):
         self.mean = mean
         self.covariance = covariance
         self.track_id = track_id
+        self.global_id = -1
         self.hits = 1
         self.age = 1
         self.time_since_update = 0
@@ -103,12 +117,19 @@ class Track:
         self._max_age = max_age
         self.cls_id = cls_id
 
-        self._cmd_queue = asyncio.Queue()
+        self.client_cfg = client_cfg
 
-        asyncio.run_coroutine_threadsafe(self.communicate(), event_loop)
+        self.event_loop = event_loop
+
+        asyncio.run_coroutine_threadsafe(self.communicate(
+            Command(Command.FETCH, feature)), event_loop)
+
+        # self._cmd_queue.put_nowait(
+        #    Command(Command.FETCH, feature)
+        # )
 
     def _set_track_id(self, track_id):
-        self.track_id = track_id
+        self.global_id = track_id
 
     def to_tlwh(self):
         """Get current position in bounding box format `(top left x, top left y,
@@ -169,6 +190,15 @@ class Track:
             self.mean, self.covariance, detection.to_xyah()
         )
         self.features.append(detection.feature)
+        try:
+            if self.is_confirmed():
+                # I know it sounds crazy, but this the way to comm between two worlds of
+                # async and sync worlds
+                if (self.hits % self.client_cfg.Budget) == 0:
+                    self._cmd_queue.sync_put(
+                        Command(Command.UPDATE, detection.feature))
+        except Exception as e:
+            print(str(e))
 
         self.hits += 1
         self.time_since_update = 0
@@ -198,14 +228,100 @@ class Track:
         """Returns the class id of this track"""
         return self.cls_id
 
-    async def communicate(self):
+    async def compress_nparr(self):  # nparr):
+        """
+        Returns the given numpy array as compressed bytestring,
+        the uncompressed and the compressed byte size.
+        """
         while True:
-            sleep_time = random.randint(0, 10)
-            print(
-                "Track {} is going to sleep for {} second(s)".format(
-                    self.track_id, sleep_time
-                )
-            )
-            await asyncio.sleep(sleep_time)
-            # cmd = await self._cmd_queue.get()
-            pass
+            cmd = await self._cmd_queue.async_get()
+            bytestream = io.BytesIO()
+            nparr = cmd.feature
+            np.save(bytestream, nparr)
+            uncompressed = bytestream.getvalue()
+            cmd.cmp_feature = zlib.compress(uncompressed)
+            await self._queue_comp2post.async_put(cmd)
+            self._cmd_queue.async_task_done()
+
+        # return compressed, len(uncompressed), len(compressed)
+
+    async def post_nparr(self):
+        while True:
+            cmd = await self._queue_comp2post.async_get()
+            print('Sending the data for track: {}'.format(self.track_id))
+            server_address = "http://" + self.client_cfg.Server_IP + \
+                ":" + str(self.client_cfg.Server_Socket)
+            if cmd.cmd_type == Command.UPDATE:
+                url = "{}/{}?cam_id={}&track_id={}&global_id={}".format(server_address,
+                                                                        self.client_cfg.Update_URL,
+                                                                        self.client_cfg.Camera_ID,
+                                                                        self.track_id, self.global_id)
+            elif cmd.cmd_type == Command.FETCH:
+                url = "{}/{}?cam_id={}&track_id={}".format(server_address,
+                                                           self.client_cfg.Fetch_URL,
+                                                           self.client_cfg.Camera_ID, self.track_id)
+
+            async with aiohttp.ClientSession(json_serialize=ujson.dumps) as session:
+                try:
+                    async with session.post(
+                        url,
+                        data=cmd.cmp_feature,
+                        headers={"Content-Type": "application/octet-stream"},
+                    ) as response:
+                        # TODO: Fix the error handling and logging.
+                        cmd.response = await response.json()
+                        await self._queue_post2process.async_put(cmd)
+                        self._queue_comp2post.async_task_done()
+                except Exception as e:
+                    print("The error is : {}".format(str(e)))
+
+    async def process_response(self):
+        while True:
+            cmd = await self._queue_post2process.async_get()
+            if cmd.cmd_type == Command.FETCH or cmd.cmd_type == Command.UPDATE:
+                self._set_track_id(cmd.response['global_id'])
+            self._queue_post2process.async_task_done()
+
+    async def communicate(self, init_command):
+        if self.client_cfg is not None:
+
+            cmp2post = [
+                self.event_loop.create_task(self.compress_nparr()) for _ in range(self.client_cfg.Worker_Size)
+            ]
+            post2process = [
+                self.event_loop.create_task(self.post_nparr()) for _ in range(self.client_cfg.Worker_Size)
+            ]
+
+            process = [
+                self.event_loop.create_task(
+                    self.process_response()
+                ) for _ in range(self.client_cfg.Worker_Size)
+            ]
+
+            self._cmd_queue = Queue(self.client_cfg.Budget)
+            self._queue_comp2post = Queue(self.client_cfg.Budget)
+            self._queue_post2process = Queue(self.client_cfg.Budget)
+
+            # Let's trigger the communication pipeline.
+            await self._cmd_queue.async_put(init_command)
+
+            # with both producers and consumers running, wait for
+            # the producers to finish
+
+            await asyncio.gather(*cmp2post, return_exceptions=True)
+
+            await asyncio.gather(*post2process, return_exceptions=True)
+
+            await asyncio.gather(*process, return_exceptions=True)
+
+            await self._cmd_queue.async_wait()
+            await self._queue_comp2post.async_wait()
+            await self._queue_post2process.async_wait()
+
+            # await self._cmd_queue.join()
+            # await self._queue_comp2post.join()
+            # await self._queue_post2process.join()
+
+        else:
+            print("!> Client config is not set. System is based on local ReID for track:{}".format(
+                self.track_id))
