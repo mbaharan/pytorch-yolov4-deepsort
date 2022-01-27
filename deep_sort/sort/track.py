@@ -304,8 +304,12 @@ class Track:
 
     def process_response(self, cmd):
         if cmd.response is not None:
-            if cmd.cmd_type == Command.FETCH or cmd.cmd_type == Command.UPDATE:
-                self._set_track_id(cmd.response['global_id'])
+            recv_global_id = cmd.response['global_id']
+            if cmd.cmd_type == Command.FETCH:
+                self._set_track_id(recv_global_id)
+            elif cmd.cmd_type == Command.UPDATE:
+                if self.global_id == -1 or self.global_id != recv_global_id:
+                    self._set_track_id(recv_global_id)
 
     def communicate(self):
         if self.client_cfg is not None:
