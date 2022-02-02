@@ -1,8 +1,8 @@
 # vim: expandtab:ts=4:sw=4
 
 #import asyncio
-from distutils import command
-import re
+#from distutils import command
+import cv2
 import zlib
 import requests
 #import asyncio
@@ -24,13 +24,14 @@ class Command:
     UPDATE = 2
     STOP = 3
 
-    def __init__(self, cmd_type, feature, img_bbox=None) -> None:
+    def __init__(self, cmd_type, feature, img_bbox=np.array([])) -> None:
         self.cmd_type = cmd_type
         self.feature = feature
-        self.cmp_feature = None
         self.response = None
-        self.img_bbox = img_bbox
-        self.cmp_img_bbox = None
+        self.img_bbox = cv2.cvtColor(img_bbox, cv2.COLOR_RGB2BGR)
+        self.data = {'img': self.img_bbox.tolist(),
+                     'feature': feature.tolist()}
+        self.cmp_data = None
 
     def __str__(self) -> str:
         cmd_type = 'Update'
@@ -294,17 +295,10 @@ class Track:
         Returns the given numpy array as compressed bytestring,
         the uncompressed and the compressed byte size.
         """
-        bytestream = io.BytesIO()
-        nparr = cmd.feature
-        np.save(bytestream, nparr)
+        bytestream = io.StringIO()
+        json.dump(cmd.data, bytestream)
         uncompressed = bytestream.getvalue()
-        cmd.cmp_feature = zlib.compress(uncompressed)
-
-        if self.client_cfg.DeepSORT.Send_BBOX_IMG and cmd.img_bbox is not None:
-            bytestream_img = io.BytesIO()
-            np.save(bytestream_img, cmd.img_bbox)
-            uncompressed_img_byte = bytestream.getvalue()
-            cmd.cmp_img_bbox = uncompressed_img_byte#zlib.compress(uncompressed_img_byte)
+        cmd.cmp_data = zlib.compress(uncompressed.encode())
 
         return cmd
 
@@ -326,13 +320,11 @@ class Track:
                                                                    self.client_cfg.Camera_ID, self.track_id,
                                                                    int(self.cls_id))
 
-        with requests.Session() as session:  # json_serialize=ujson.dumps           
-            data={'img':cmd.img_bbox.tolist(), 'feature': cmd.feature.tolist()}
-            
+        with requests.Session() as session:  # json_serialize=ujson.dumps
             try:
                 with session.post(
                     url,
-                    data=data
+                    data=cmd.cmp_data
                     #headers={"Content-Type": "application/octet-stream"},
                 ) as response:
                     # TODO: Fix the error handling and logging.
