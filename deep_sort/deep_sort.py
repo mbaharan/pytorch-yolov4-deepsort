@@ -59,7 +59,7 @@ class DeepSort(object):
 
         # update tracker
         self.tracker.predict()
-        self.tracker.update(detections)
+        self.tracker.update(detections, ori_img)
 
         # output bbox identities
         outputs = []

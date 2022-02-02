@@ -4,14 +4,21 @@ from .deep_sort import DeepSort
 __all__ = ['DeepSort', 'build_tracker']
 
 
-def build_tracker(args, client_cfg, use_cuda):
-    return DeepSort(args.ds_model_path, namesfile=args.yolo_classes_path,  # namesfile=cfg.DEEPSORT.CLASS_NAMES,
-                    max_dist=args.max_dist, min_confidence=args.min_confidence,
-                    nms_max_overlap=args.nms_max_overlap, max_iou_distance=args.max_iou_distance,
-                    max_age=args.max_age, n_init=args.n_init, nn_budget=args.nn_budget,
-                    use_osnet=not(args.original_feature_extractor), 
+def build_tracker(client_cfg, use_cuda):
+    return DeepSort(client_cfg.DeepSORT.DS_Model_Path,
+                    # namesfile=cfg.DEEPSORT.CLASS_NAMES,
+                    namesfile=client_cfg.DeepSORT.YOLO_Classes_Path,
+                    max_dist=client_cfg.DeepSORT.Max_Dist,
+                    min_confidence=client_cfg.DeepSORT.Min_Confidence,
+                    nms_max_overlap=client_cfg.DeepSORT.NMS_Max_Overlap,
+                    max_iou_distance=client_cfg.DeepSORT.Max_IOU_Distance,
+                    max_age=client_cfg.DeepSORT.Max_Age,
+                    n_init=client_cfg.DeepSORT.N_Init,
+                    nn_budget=client_cfg.DeepSORT.NN_Budget,
+                    use_osnet=not(
+                        client_cfg.DeepSORT.Original_Feature_Extractor),
                     client_cfg=client_cfg,
-                    use_cuda=True)
+                    use_cuda=use_cuda)
 
 
 # def build_tracker(cfg, use_cuda):

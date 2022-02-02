@@ -2,10 +2,11 @@
 
 #import asyncio
 from distutils import command
+import re
 import zlib
 import requests
 #import asyncio
-import ujson
+import json
 import numpy as np
 import io
 from threading import Thread
@@ -23,14 +24,16 @@ class Command:
     UPDATE = 2
     STOP = 3
 
-    def __init__(self, cmd_type, feature) -> None:
+    def __init__(self, cmd_type, feature, img_bbox=None) -> None:
         self.cmd_type = cmd_type
         self.feature = feature
         self.cmp_feature = None
         self.response = None
+        self.img_bbox = img_bbox
+        self.cmp_img_bbox = None
 
     def __str__(self) -> str:
-        cmd_type = 'Update' 
+        cmd_type = 'Update'
         if self.cmd_type == 2:
             cmd_type = 'FETCH'
         else:
@@ -109,7 +112,8 @@ class Track:
         max_age,
         feature=None,
         cls_id=None,
-        client_cfg=None
+        client_cfg=None,
+        org_img=None
     ):
         self.mean = mean
         self.covariance = covariance
@@ -131,11 +135,21 @@ class Track:
         self.client_cfg = client_cfg
 
         self._queue_comm = Queue(self.client_cfg.Budget)
-        self._queue_comm.put_nowait(Command(Command.FETCH, feature))
+        img_bbox = None
+        if self.client_cfg.DeepSORT.Send_BBOX_IMG and org_img is not None:
+            img_bbox = self._get_bbox_img(org_img)
+
+        self._queue_comm.put_nowait(Command(Command.FETCH, feature, img_bbox))
 
         self._run_thread = True
         self._thread_comm = Thread(target=self.communicate)
         self._thread_comm.start()
+
+        self.global_id_history = {}
+        self.global_id_hit = {}
+
+        # Define the arbiter callback function
+        self.arbiter = self.arbiter_history_hit  # arbiter_immediate_update
 
         #self.event_loop = event_loop
 
@@ -145,6 +159,15 @@ class Track:
         # self._cmd_queue.put_nowait(
         #    Command(Command.FETCH, feature)
         # )
+
+    def _get_bbox_img(self, org_img):
+        height, width = org_img.shape[:2]
+        x, y, w, h = self.to_tlwh()
+        x1 = max(int(x), 0)
+        x2 = min(int(x+w), width-1)
+        y1 = max(int(y), 0)
+        y2 = min(int(y+h), height-1)
+        return org_img[y1:y2, x1:x2]
 
     def _set_track_id(self, track_id):
         self.global_id = track_id
@@ -192,7 +215,7 @@ class Track:
         self.age += 1
         self.time_since_update += 1
 
-    def update(self, kf, detection):
+    def update(self, kf, detection, org_img):
         """Perform Kalman filter measurement update step and update the feature
         cache.
 
@@ -213,8 +236,13 @@ class Track:
                 # I know it sounds crazy, but this the way to comm between two worlds of
                 # async and sync worlds
                 if (self.hits % self.client_cfg.Budget) == 0:
+                    img_bbox = None
+                    if self.client_cfg.DeepSORT.Send_BBOX_IMG and org_img is not None:
+                        img_bbox = self._get_bbox_img(org_img)
+
                     self._queue_comm.put_nowait(
-                        Command(Command.UPDATE, detection.feature))
+                        Command(Command.UPDATE, detection.feature, img_bbox))
+
         except Exception as e:
             print(str(e))
 
@@ -244,6 +272,7 @@ class Track:
         elif self.time_since_update > self._max_age:
             self.state = TrackState.Deleted
             self._stop_comm_thread()
+
     def is_tentative(self):
         """Returns True if this track is tentative (unconfirmed)."""
         return self.state == TrackState.Tentative
@@ -260,7 +289,7 @@ class Track:
         """Returns the class id of this track"""
         return self.cls_id
 
-    def compress_nparr(self, cmd):  # nparr):
+    def compress_nparr(self, cmd: Command):  # nparr):
         """
         Returns the given numpy array as compressed bytestring,
         the uncompressed and the compressed byte size.
@@ -270,30 +299,41 @@ class Track:
         np.save(bytestream, nparr)
         uncompressed = bytestream.getvalue()
         cmd.cmp_feature = zlib.compress(uncompressed)
+
+        if self.client_cfg.DeepSORT.Send_BBOX_IMG and cmd.img_bbox is not None:
+            bytestream_img = io.BytesIO()
+            np.save(bytestream_img, cmd.img_bbox)
+            uncompressed_img_byte = bytestream.getvalue()
+            cmd.cmp_img_bbox = uncompressed_img_byte#zlib.compress(uncompressed_img_byte)
+
         return cmd
 
         # return compressed, len(uncompressed), len(compressed)
 
-    def post_nparr(self, cmd):
+    def post_nparr(self, cmd: Command):
         print('Sending the data for track: {}'.format(self.track_id))
         server_address = "http://" + self.client_cfg.Server_IP + \
             ":" + str(self.client_cfg.Server_Socket)
         if cmd.cmd_type == Command.UPDATE:
-            url = "{}/{}?cam_id={}&track_id={}&global_id={}".format(server_address,
-                                                                    self.client_cfg.Update_URL,
-                                                                    self.client_cfg.Camera_ID,
-                                                                    self.track_id, self.global_id)
+            url = "{}/{}?cam_id={}&track_id={}&global_id={}&class_id={}".format(server_address,
+                                                                                self.client_cfg.Update_URL,
+                                                                                self.client_cfg.Camera_ID,
+                                                                                self.track_id, self.global_id,
+                                                                                int(self.cls_id))
         elif cmd.cmd_type == Command.FETCH:
-            url = "{}/{}?cam_id={}&track_id={}".format(server_address,
-                                                       self.client_cfg.Fetch_URL,
-                                                       self.client_cfg.Camera_ID, self.track_id)
+            url = "{}/{}?cam_id={}&track_id={}&class_id={}".format(server_address,
+                                                                   self.client_cfg.Fetch_URL,
+                                                                   self.client_cfg.Camera_ID, self.track_id,
+                                                                   int(self.cls_id))
 
-        with requests.Session() as session:  # json_serialize=ujson.dumps
+        with requests.Session() as session:  # json_serialize=ujson.dumps           
+            data={'img':cmd.img_bbox.tolist(), 'feature': cmd.feature.tolist()}
+            
             try:
                 with session.post(
                     url,
-                    data=cmd.cmp_feature,
-                    headers={"Content-Type": "application/octet-stream"},
+                    data=data
+                    #headers={"Content-Type": "application/octet-stream"},
                 ) as response:
                     # TODO: Fix the error handling and logging.
                     cmd.response = response.json()
@@ -302,14 +342,51 @@ class Track:
 
         return cmd
 
+    def arbiter_immediate_update(self, recv_global_id):
+        return recv_global_id
+
+    def arbiter_history_hit(self, recv_global_id):
+        most_recent_before_update = [
+            k for k, v in self.global_id_history.items() if v == 1][0]
+        most_hitted_value_before_update = max(
+            self.global_id_hit, key=self.global_id_hit.get)
+
+        for key in self.global_id_history.keys():
+            if key != recv_global_id:
+                # They are not any more most recent values.
+                self.global_id_history[key] = 0
+        self.global_id_history[recv_global_id] = 1
+
+        if recv_global_id in self.global_id_hit.keys():
+            self.global_id_hit[recv_global_id] += 1
+        else:
+            self.global_id_hit[recv_global_id] = 1
+
+        most_hitted_value_after_update = max(
+            self.global_id_hit, key=self.global_id_hit.get)
+#        most_recent_after_update = [k for k, v in self.global_id_history.items() if v == 0][0]
+
+        if most_hitted_value_after_update >= most_hitted_value_before_update:
+            return most_hitted_value_after_update
+        else:
+            return most_recent_before_update
+
     def process_response(self, cmd):
         if cmd.response is not None:
             recv_global_id = cmd.response['global_id']
             if cmd.cmd_type == Command.FETCH:
+                self.global_id_history[recv_global_id] = 1
+                self.global_id_hit[recv_global_id] = 1
                 self._set_track_id(recv_global_id)
             elif cmd.cmd_type == Command.UPDATE:
-                if self.global_id == -1 or self.global_id != recv_global_id:
+                if self.global_id == -1:
+                    self.global_id_history[recv_global_id] = 1
+                    self.global_id_hit[recv_global_id] = 1
                     self._set_track_id(recv_global_id)
+                # We have multiple global IDs, let's ask arbiter to judge!
+                else:
+                    final_global_id = self.arbiter(recv_global_id)
+                    self._set_track_id(final_global_id)
 
     def communicate(self):
         if self.client_cfg is not None:
