@@ -28,9 +28,16 @@ class Command:
         self.cmd_type = cmd_type
         self.feature = feature
         self.response = None
-        self.img_bbox = cv2.cvtColor(img_bbox, cv2.COLOR_RGB2BGR)
-        self.data = {'img': self.img_bbox.tolist(),
-                     'feature': feature.tolist()}
+        
+        self.img_bbox=np.array([])
+        if img_bbox is not None:
+            if img_bbox.size != 0:
+                self.img_bbox = cv2.cvtColor(img_bbox, cv2.COLOR_RGB2BGR)
+
+        self.data = None
+        if cmd_type != Command.STOP:
+            self.data = {'img': self.img_bbox.tolist(),
+                         'feature': feature.tolist()}
         self.cmp_data = None
 
     def __str__(self) -> str:
