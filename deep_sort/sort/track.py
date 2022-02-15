@@ -5,8 +5,8 @@
 import cv2
 import zlib
 import requests
-#import asyncio
-import json
+import aiohttp
+import ujson
 import numpy as np
 import io
 from threading import Thread
@@ -24,21 +24,17 @@ class Command:
     UPDATE = 2
     STOP = 3
 
-    def __init__(self, cmd_type, feature, img_bbox=np.array([])) -> None:
+    def __init__(self, cmd_type, feature, img_bbox=None) -> None:
         self.cmd_type = cmd_type
         self.feature = feature
         self.response = None
-        
-        self.img_bbox=np.array([])
-        if img_bbox is not None:
-            if img_bbox.size != 0:
-                self.img_bbox = cv2.cvtColor(img_bbox, cv2.COLOR_RGB2BGR)
+        self.img_response = None
 
-        self.data = None
-        if cmd_type != Command.STOP:
-            self.data = {'img': self.img_bbox.tolist(),
-                         'feature': feature.tolist()}
-        self.cmp_data = None
+        if img_bbox is not None:
+            self.img_bbox = cv2.cvtColor(img_bbox, cv2.COLOR_RGB2BGR)
+
+        self.cmp_feature = None
+        self.cmp_image = None
 
     def __str__(self) -> str:
         cmd_type = 'Update'
@@ -121,7 +117,9 @@ class Track:
         feature=None,
         cls_id=None,
         client_cfg=None,
-        org_img=None
+        org_img=None,
+        # Only these classes will be sent to server for global reID.
+        filtered_classes=[0]
     ):
         self.mean = mean
         self.covariance = covariance
@@ -141,6 +139,8 @@ class Track:
         self.cls_id = cls_id
 
         self.client_cfg = client_cfg
+
+        self.filtered_classes = filtered_classes
 
         self._queue_comm = Queue(self.client_cfg.Budget)
         img_bbox = None
@@ -295,17 +295,22 @@ class Track:
 
     def get_cls_id(self):
         """Returns the class id of this track"""
-        return self.cls_id
+        return int(self.cls_id)
 
     def compress_nparr(self, cmd: Command):  # nparr):
         """
         Returns the given numpy array as compressed bytestring,
         the uncompressed and the compressed byte size.
         """
-        bytestream = io.StringIO()
-        json.dump(cmd.data, bytestream)
+        bytestream = io.BytesIO()
+        np.save(bytestream, cmd.feature)
         uncompressed = bytestream.getvalue()
-        cmd.cmp_data = zlib.compress(uncompressed.encode())
+        cmd.cmp_feature = zlib.compress(uncompressed)
+        if cmd.img_bbox is not None:
+            bytestream_img = io.BytesIO()
+            np.save(bytestream_img, cmd.img_bbox)
+            uncompressed_img = bytestream_img.getvalue()
+            cmd.cmp_image = zlib.compress(uncompressed_img)
 
         return cmd
 
@@ -315,29 +320,70 @@ class Track:
         print('Sending the data for track: {}'.format(self.track_id))
         server_address = "http://" + self.client_cfg.Server_IP + \
             ":" + str(self.client_cfg.Server_Socket)
+        bbox_tlwh = "{:.0f},{:.0f},{:.0f},{:.0f}".format(
+            *(self.to_tlwh().tolist()))
+        cam_id = self.client_cfg.Additional_Camera_ID if self.client_cfg.Camera_ID == - \
+            1 else self.client_cfg.Camera_ID
         if cmd.cmd_type == Command.UPDATE:
-            url = "{}/{}?cam_id={}&track_id={}&global_id={}&class_id={}".format(server_address,
-                                                                                self.client_cfg.Update_URL,
-                                                                                self.client_cfg.Camera_ID,
-                                                                                self.track_id, self.global_id,
-                                                                                int(self.cls_id))
+            url_args = "?cam_id={}&track_id={}&global_id={}&class_id={}&bbox_tlwh={}".format(cam_id,
+                                                                                             self.track_id, self.global_id,
+                                                                                             int(
+                                                                                                 self.cls_id),
+                                                                                             bbox_tlwh)
+            id_url = '{}/{}{}'.format(server_address,
+                                      self.client_cfg.Update_URL,
+                                      url_args)
         elif cmd.cmd_type == Command.FETCH:
-            url = "{}/{}?cam_id={}&track_id={}&class_id={}".format(server_address,
-                                                                   self.client_cfg.Fetch_URL,
-                                                                   self.client_cfg.Camera_ID, self.track_id,
-                                                                   int(self.cls_id))
+            url_args = "?cam_id={}&track_id={}&class_id={}&bbox_tlwh={}".format(
+                cam_id, self.track_id,
+                int(self.cls_id),
+                bbox_tlwh)
 
-        with requests.Session() as session:  # json_serialize=ujson.dumps
+            id_url = '{}/{}{}'.format(server_address,
+                                      self.client_cfg.Fetch_URL,
+                                      url_args)
+
+        with requests.Session() as session:
+            '''
+                NOTE: You may ask why I am getting and sending back
+                the `last_inserted_key_val` when we have all the information here. You can use it 
+                and decouple the POST procedure of sending image in a seperated thread to improve the
+                performance. ;)
+            '''
             try:
                 with session.post(
-                    url,
-                    data=cmd.cmp_data
-                    #headers={"Content-Type": "application/octet-stream"},
+                    id_url,
+                    data=cmd.cmp_feature,
+                    headers={"Content-Type": "application/octet-stream"},
                 ) as response:
                     # TODO: Fix the error handling and logging.
                     cmd.response = response.json()
             except Exception as e:
                 print("The error is : {}".format(str(e)))
+
+        # Check if need also to send bbox img or not.
+        if cmd.cmp_image is not None and cmd.response is not None:
+
+            last_inserted_key_val = cmd.response['last_inserted_key_val']
+            if last_inserted_key_val > -1:
+                img_url = '{}/{}?last_inserted_key_val={}'.format(server_address,
+                                                                  self.client_cfg.BBOx_IMG_URL,
+                                                                  last_inserted_key_val)
+
+                with requests.Session() as session:
+                    try:
+                        with session.post(
+                            img_url,
+                            data=cmd.cmp_image,
+                            headers={
+                                "Content-Type": "application/octet-stream"},
+                        ) as response:
+                            # TODO: Fix the error handling and logging.
+                            cmd.img_response = response.json()
+                    except Exception as e:
+                        print("The error is : {}".format(str(e)))
+            else:
+                print("There was an error on server side to save the data.")
 
         return cmd
 
@@ -393,9 +439,13 @@ class Track:
                 cmd = self._queue_comm.get(block=True)
                 if cmd.cmd_type == Command.STOP:
                     break
-                cmd = self.compress_nparr(cmd)
-                cmd = self.post_nparr(cmd)
-                self.process_response(cmd)
+
+                # Let's filter out the objects we want to the server
+                if self.get_cls_id() in self.filtered_classes:
+                    cmd = self.compress_nparr(cmd)
+                    cmd = self.post_nparr(cmd)
+                    self.process_response(cmd)
+
                 self._queue_comm.task_done()
         else:
             print("!> Client config is not set. System is based on local ReID for track:{}".format(
