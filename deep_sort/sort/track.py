@@ -2,48 +2,15 @@
 
 #import asyncio
 #from distutils import command
-import cv2
 import zlib
 import requests
-import aiohttp
-import ujson
 import numpy as np
 import io
 from threading import Thread
 from queue import Queue
+from api_utils.interfaces import Command
+
 #from .queue import Queue
-
-
-class Command:
-    """
-    Command for communication function. `FETCH` will intract with server to receive the global ID.
-    `Update` will send a new feature to the server to update its feature pool.
-    """
-
-    FETCH = 1
-    UPDATE = 2
-    STOP = 3
-
-    def __init__(self, cmd_type, feature, img_bbox=None) -> None:
-        self.cmd_type = cmd_type
-        self.feature = feature
-        self.response = None
-        self.img_response = None
-
-        if img_bbox is not None:
-            self.img_bbox = cv2.cvtColor(img_bbox, cv2.COLOR_RGB2BGR)
-
-        self.cmp_feature = None
-        self.cmp_image = None
-
-    def __str__(self) -> str:
-        cmd_type = 'Update'
-        if self.cmd_type == 2:
-            cmd_type = 'FETCH'
-        else:
-            cmd_type = 'STOP'
-        return 'Type: {}'.format(cmd_type)
-
 
 class TrackState:
     """
@@ -117,7 +84,6 @@ class Track:
         feature=None,
         cls_id=None,
         client_cfg=None,
-        org_img=None,
         # Only these classes will be sent to server for global reID.
         filtered_classes=[0]
     ):
@@ -131,8 +97,16 @@ class Track:
 
         self.state = TrackState.Tentative
         self.features = []
+        self.last_features = []
         if feature is not None:
             self.features.append(feature)
+        
+        '''
+            This variable will be used at SmartCity `run` function to get the feature from the current frame.
+            The feature list variable will be erased after each update function.
+            Try to understand why though!
+        '''
+        self.last_features = feature
 
         self._n_init = n_init
         self._max_age = max_age
@@ -142,12 +116,7 @@ class Track:
 
         self.filtered_classes = filtered_classes
 
-        self._queue_comm = Queue(self.client_cfg.Budget)
-        img_bbox = None
-        if self.client_cfg.DeepSORT.Send_BBOX_IMG and org_img is not None:
-            img_bbox = self._get_bbox_img(org_img)
-
-        self._queue_comm.put_nowait(Command(Command.FETCH, feature, img_bbox))
+        self.queue_comm = Queue()
 
         self._run_thread = True
         self._thread_comm = Thread(target=self.communicate)
@@ -167,15 +136,6 @@ class Track:
         # self._cmd_queue.put_nowait(
         #    Command(Command.FETCH, feature)
         # )
-
-    def _get_bbox_img(self, org_img):
-        height, width = org_img.shape[:2]
-        x, y, w, h = self.to_tlwh()
-        x1 = max(int(x), 0)
-        x2 = min(int(x+w), width-1)
-        y1 = max(int(y), 0)
-        y2 = min(int(y+h), height-1)
-        return org_img[y1:y2, x1:x2]
 
     def _set_track_id(self, track_id):
         self.global_id = track_id
@@ -223,7 +183,7 @@ class Track:
         self.age += 1
         self.time_since_update += 1
 
-    def update(self, kf, detection, org_img):
+    def update(self, kf, detection):
         """Perform Kalman filter measurement update step and update the feature
         cache.
 
@@ -238,21 +198,9 @@ class Track:
         self.mean, self.covariance = kf.update(
             self.mean, self.covariance, detection.to_xyah()
         )
+
         self.features.append(detection.feature)
-        try:
-            if self.is_confirmed():
-                # I know it sounds crazy, but this the way to comm between two worlds of
-                # async and sync worlds
-                if (self.hits % self.client_cfg.Budget) == 0:
-                    img_bbox = None
-                    if self.client_cfg.DeepSORT.Send_BBOX_IMG and org_img is not None:
-                        img_bbox = self._get_bbox_img(org_img)
-
-                    self._queue_comm.put_nowait(
-                        Command(Command.UPDATE, detection.feature, img_bbox))
-
-        except Exception as e:
-            print(str(e))
+        self.last_features = self.features
 
         self.hits += 1
         self.time_since_update = 0
@@ -262,14 +210,14 @@ class Track:
     def _stop_comm_thread(self):
         print('x> Stopping thread for track {}'.format(self.track_id))
         self._run_thread = False
-        self._queue_comm.put_nowait(Command(Command.STOP, None))
+        self.queue_comm.put_nowait(Command(Command.STOP, None))
         '''
-         while self._queue_comm.not_empty:
+         while self.queue_comm.not_empty:
              print("x> Skipped command `{}` for Track: {}".format(
-                 self.track_id, self._queue_comm.get_nowait()))
+                 self.track_id, self.queue_comm.get_nowait()))
         '''
-        self._queue_comm.task_done()
-        self._queue_comm.join()
+        self.queue_comm.task_done()
+        self.queue_comm.join()
         self._thread_comm.join()
 
     def mark_missed(self):
@@ -436,7 +384,7 @@ class Track:
     def communicate(self):
         if self.client_cfg is not None:
             while True and self._run_thread:
-                cmd = self._queue_comm.get(block=True)
+                cmd = self.queue_comm.get(block=True)
                 if cmd.cmd_type == Command.STOP:
                     break
 
@@ -446,7 +394,7 @@ class Track:
                     cmd = self.post_nparr(cmd)
                     self.process_response(cmd)
 
-                self._queue_comm.task_done()
+                self.queue_comm.task_done()
         else:
             print("!> Client config is not set. System is based on local ReID for track:{}".format(
                 self.track_id))
