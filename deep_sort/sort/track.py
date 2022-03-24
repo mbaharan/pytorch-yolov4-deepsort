@@ -208,7 +208,7 @@ class Track:
             self.state = TrackState.Confirmed
 
     def _stop_comm_thread(self):
-        print('x> Stopping thread for track {}'.format(self.track_id))
+        print('x> Stopping COMM thread for track {}'.format(self.track_id))
         self._run_thread = False
         self.queue_comm.put_nowait(Command(Command.STOP, None))
         '''
