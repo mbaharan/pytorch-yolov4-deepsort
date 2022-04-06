@@ -16,6 +16,7 @@ class DeepSort(object):
                  min_confidence=0.3, nms_max_overlap=1.0, max_iou_distance=0.7,
                  max_age=70, n_init=3, nn_budget=100, use_osnet=True,
                  client_cfg=None,
+                 logger=None,
                  use_cuda=True):
         self.min_confidence = min_confidence
         self.nms_max_overlap = nms_max_overlap
@@ -28,7 +29,7 @@ class DeepSort(object):
         metric = NearestNeighborDistanceMetric(
             "cosine", max_cosine_distance, nn_budget)
         self.tracker = Tracker(metric, max_iou_distance=max_iou_distance,
-                               max_age=max_age, n_init=n_init, client_cfg=client_cfg)
+                               max_age=max_age, n_init=n_init, client_cfg=client_cfg, logger=logger)
         self.class_names = self.load_class_names(namesfile)
         # print(type(self.class_names)) #---list
 
@@ -64,7 +65,7 @@ class DeepSort(object):
         # output bbox identities
         outputs = []
         for track in self.tracker.tracks:
-            if not track.is_confirmed() or track.time_since_update > 1:
+            if not track.is_confirmed() or track.time_since_update > 1 or track.is_deleted():
                 continue
             box = track.to_tlwh()
             x1, y1, x2, y2 = self._tlwh_to_xyxy(box)

@@ -7,10 +7,11 @@ import requests
 import numpy as np
 import io
 from threading import Thread
-from queue import Queue
+from queue import Empty, Queue
 from api_utils.interfaces import Command
 
 #from .queue import Queue
+
 
 class TrackState:
     """
@@ -83,6 +84,7 @@ class Track:
         max_age,
         feature=None,
         cls_id=None,
+        logger=None,
         client_cfg=None,
         # Only these classes will be sent to server for global reID.
         filtered_classes=[0]
@@ -94,13 +96,14 @@ class Track:
         self.hits = 1
         self.age = 1
         self.time_since_update = 0
+        self.logger = logger
 
         self.state = TrackState.Tentative
         self.features = []
         self.last_features = []
         if feature is not None:
             self.features.append(feature)
-        
+
         '''
             This variable will be used at SmartCity `run` function to get the feature from the current frame.
             The feature list variable will be erased after each update function.
@@ -208,16 +211,13 @@ class Track:
             self.state = TrackState.Confirmed
 
     def _stop_comm_thread(self):
-        print('x> Stopping COMM thread for track {}'.format(self.track_id))
+        self.logger.debug('Stopping COMM thread for track {}'.format(self.track_id))
         self._run_thread = False
-        self.queue_comm.put_nowait(Command(Command.STOP, None))
-        '''
-         while self.queue_comm.not_empty:
-             print("x> Skipped command `{}` for Track: {}".format(
-                 self.track_id, self.queue_comm.get_nowait()))
-        '''
-        self.queue_comm.task_done()
+        self.queue_comm.put(Command(Command.STOP, None))
+        self.logger.debug('Queue for track#{} has {} members.'.format(self.track_id, self.queue_comm.qsize()))
+        self.logger.debug('Joining queue for track#{}.'.format(self.track_id))
         self.queue_comm.join()
+        self.logger.debug('Joining COMM thread for track#{}.'.format(self.track_id))
         self._thread_comm.join()
 
     def mark_missed(self):
@@ -265,7 +265,7 @@ class Track:
         # return compressed, len(uncompressed), len(compressed)
 
     def post_nparr(self, cmd: Command):
-        print('Sending the data for track: {}'.format(self.track_id))
+        self.logger.info('Sending the data for track: {}'.format(self.track_id))
         server_address = "http://" + self.client_cfg.Server_IP + \
             ":" + str(self.client_cfg.Server_Socket)
         bbox_tlwh = "{:.0f},{:.0f},{:.0f},{:.0f}".format(
@@ -307,7 +307,7 @@ class Track:
                     # TODO: Fix the error handling and logging.
                     cmd.response = response.json()
             except Exception as e:
-                print("The error is : {}".format(str(e)))
+                self.logger.debug("The error is : {}".format(str(e)))
 
         # Check if need also to send bbox img or not.
         if cmd.cmp_image is not None and cmd.response is not None:
@@ -329,9 +329,9 @@ class Track:
                             # TODO: Fix the error handling and logging.
                             cmd.img_response = response.json()
                     except Exception as e:
-                        print("The error is : {}".format(str(e)))
+                        self.logger.debug("The error is : {}".format(str(e)))
             else:
-                print("There was an error on server side to save the data.")
+                self.logger.debug("There was an error on server side to save the data.")
 
         return cmd
 
@@ -383,18 +383,32 @@ class Track:
 
     def communicate(self):
         if self.client_cfg is not None:
-            while True and self._run_thread:
-                cmd = self.queue_comm.get(block=True)
-                if cmd.cmd_type == Command.STOP:
-                    break
+            while True: #self._run_thread:
+                try:
+                    cmd = self.queue_comm.get(block=True)
+                    if cmd.cmd_type == Command.STOP:
+                        # Flush the queue if it is not empty.
+                        while not self.queue_comm.empty():
+                            try:
+                                cmd = self.queue_comm.get()
+                                self.logger.debug("Skipped command `{}` for Track: {}".format(
+                                    cmd.cmd_type ,self.track_id))
+                                self.queue_comm.task_done()
+                            except Empty:
+                                continue
 
-                # Let's filter out the objects we want to the server
-                if self.get_cls_id() in self.filtered_classes:
-                    cmd = self.compress_nparr(cmd)
-                    cmd = self.post_nparr(cmd)
-                    self.process_response(cmd)
+                        self.queue_comm.task_done()
+                        break
 
-                self.queue_comm.task_done()
+                    # Let's filter out the objects we want to the server
+                    if self.get_cls_id() in self.filtered_classes:
+                        cmd = self.compress_nparr(cmd)
+                        cmd = self.post_nparr(cmd)
+                        self.process_response(cmd)
+
+                    self.queue_comm.task_done()
+                except Empty:
+                    pass
         else:
             print("!> Client config is not set. System is based on local ReID for track:{}".format(
                 self.track_id))

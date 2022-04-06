@@ -40,10 +40,11 @@ class YOLO(object):
     #---------------------------------------------------#
     #   初始化YOLO
     #---------------------------------------------------#
-    def __init__(self, model_path, anchors_path, classes_path, **kwargs):
+    def __init__(self, model_path, anchors_path, classes_path, logger, **kwargs):
         self._defaults['model_path'] = model_path
         self._defaults['anchors_path'] = anchors_path
         self._defaults['classes_path'] = classes_path
+        self.logger = logger
         self.__dict__.update(self._defaults)
         self.class_names = self._get_class()
         self.anchors = self._get_anchors()

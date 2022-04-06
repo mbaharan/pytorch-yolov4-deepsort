@@ -38,7 +38,7 @@ class Tracker:
 
     """
 
-    def __init__(self, metric, max_iou_distance=0.7, max_age=70, n_init=3, client_cfg=None):
+    def __init__(self, metric, max_iou_distance=0.7, max_age=70, n_init=3, logger=None, client_cfg=None):
         self.metric = metric
         # print("tracker.metric:=-=-=--=",self.metric)
         self.max_iou_distance = max_iou_distance
@@ -55,6 +55,7 @@ class Tracker:
 
         self.client_cfg = client_cfg
 
+        self.logger= logger
     # def _run_comm_async(self):
     #    asyncio.set_event_loop(self.event_loop)
     #    self.event_loop.run_forever()
@@ -153,7 +154,7 @@ class Tracker:
         mean, covariance = self.kf.initiate(detection.to_xyah())
 
         track = Track(
-            mean, covariance, self._next_id, self.n_init, self.max_age, detection.feature, detection.cls_id, self.client_cfg)
+            mean, covariance, self._next_id, self.n_init, self.max_age, detection.feature, detection.cls_id, self.logger, self.client_cfg)
 
         self.tracks.append(track)
         self._next_id += 1

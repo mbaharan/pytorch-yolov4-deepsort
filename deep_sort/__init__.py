@@ -4,7 +4,7 @@ from .deep_sort import DeepSort
 __all__ = ['DeepSort', 'build_tracker']
 
 
-def build_tracker(client_cfg, use_cuda):
+def build_tracker(client_cfg, logger, use_cuda):
     return DeepSort(client_cfg.DeepSORT.DS_Model_Path,
                     # namesfile=cfg.DEEPSORT.CLASS_NAMES,
                     namesfile=client_cfg.DeepSORT.YOLO_Classes_Path,
@@ -18,6 +18,7 @@ def build_tracker(client_cfg, use_cuda):
                     use_osnet=not(
                         client_cfg.DeepSORT.Original_Feature_Extractor),
                     client_cfg=client_cfg,
+                    logger=logger,
                     use_cuda=use_cuda)
 
 
