@@ -1,12 +1,14 @@
 # vim: expandtab:ts=4:sw=4
 from __future__ import absolute_import
+from queue import Empty
+from threading import Semaphore
 import numpy as np
-import asyncio
+from threading import Thread
+from time import sleep
 from . import kalman_filter
 from . import linear_assignment
 from . import iou_matching
 from .track import Track
-
 
 class Tracker:
     """
@@ -47,6 +49,11 @@ class Tracker:
 
         self.kf = kalman_filter.KalmanFilter()
         self.tracks = []
+        '''
+        self.tracks gradually will contain only confirmed tracks. We need
+        to keep track of all `tracks` so we can join the COMM thread and Q.
+        '''
+        self.all_tracks = []
         self._next_id = 1
 
         #self.event_loop = asyncio.new_event_loop()
@@ -56,11 +63,55 @@ class Tracker:
         self.client_cfg = client_cfg
 
         self.logger= logger
+
+        self.trackers_lock = Semaphore()
+        self._thread_comm = Thread(target=self.deleted_track_collector)
+        self._thread_comm.start()
+
     # def _run_comm_async(self):
     #    asyncio.set_event_loop(self.event_loop)
     #    self.event_loop.run_forever()
     #    self._thread_event_loop.join()
 
+    def update_all_track_list(self, val):
+        self.trackers_lock.acquire()
+        if isinstance(val, list):
+            self.all_tracks = val
+        else:
+            self.all_tracks.append(val)
+        self.trackers_lock.release()
+
+    def deleted_track_collector(self):
+        while True:
+            tmp_track_list = []
+            should_be_added = True
+            for track in self.all_tracks:
+                if track.is_deleted():
+                    self.logger.debug('Stopping COMM thread for track#{}'.format(track.track_id))
+                    track.logger.debug('Queue for track#{} has {} members.'.format(track.track_id, track.queue_comm.qsize()))
+                    if track.queue_comm.empty():
+                        track.set_thread_status(False)
+                        track.logger.debug('Trying to join the queue of track#{}.'.format(track.track_id))
+                        track.queue_comm.join()
+                        track.logger.debug('Trying to join the COMM thread of track#{}.'.format(track.track_id))
+                        track._thread_comm.join(0.1)
+                        should_be_added = False
+                        track.logger.debug('The COMM thread of track#{} is officially dead!'.format(track.track_id))
+                    else:
+                        #There are some cases that thread is full but `get` is blocking.
+                        track.logger.debug("Couldn't stop queue of track#{} as it was not empty. It will be tried later".format(track.track_id))
+                        while not track.queue_comm.empty():
+                            try:
+                                _ = track.queue_comm.get_nowait()
+                                track.queue_comm.task_done()
+                            except Empty:
+                                break
+                if should_be_added:
+                    tmp_track_list.append(track)
+            self.update_all_track_list(tmp_track_list)
+            sleep(2)
+
+    
     def predict(self):
         """Propagate track state distributions one time step forward.
 
@@ -157,4 +208,5 @@ class Tracker:
             mean, covariance, self._next_id, self.n_init, self.max_age, detection.feature, detection.cls_id, self.logger, self.client_cfg)
 
         self.tracks.append(track)
+        self.update_all_track_list(track)
         self._next_id += 1

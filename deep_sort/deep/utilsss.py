@@ -9,7 +9,6 @@ import os
 import matplotlib.pyplot as plt
 import torch.nn as nn
 import torch.nn.functional as F
-import seaborn as sns
 
 # osnet imports
 import pickle

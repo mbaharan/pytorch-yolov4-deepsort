@@ -2,6 +2,7 @@
 
 #import asyncio
 #from distutils import command
+from time import sleep
 import zlib
 import requests
 import numpy as np
@@ -9,6 +10,7 @@ import io
 from threading import Thread
 from queue import Empty, Queue
 from api_utils.interfaces import Command
+from threading import Semaphore
 
 #from .queue import Queue
 
@@ -97,8 +99,11 @@ class Track:
         self.age = 1
         self.time_since_update = 0
         self.logger = logger
+        self.state_lock = Semaphore()
+        self.comm_thread_status_lock = Semaphore()
 
-        self.state = TrackState.Tentative
+        self.set_state(TrackState.Tentative)
+
         self.features = []
         self.last_features = []
         if feature is not None:
@@ -121,7 +126,7 @@ class Track:
 
         self.queue_comm = Queue()
 
-        self._run_thread = True
+        self.set_thread_status(True)
         self._thread_comm = Thread(target=self.communicate)
         self._thread_comm.start()
 
@@ -139,6 +144,17 @@ class Track:
         # self._cmd_queue.put_nowait(
         #    Command(Command.FETCH, feature)
         # )
+
+    def get_state(self):
+        self.state_lock.acquire()
+        state = self.state
+        self.state_lock.release()
+        return state
+
+    def set_state(self, state):
+        self.state_lock.acquire()
+        self.state = state
+        self.state_lock.release()
 
     def _set_track_id(self, track_id):
         self.global_id = track_id
@@ -207,39 +223,32 @@ class Track:
 
         self.hits += 1
         self.time_since_update = 0
-        if self.state == TrackState.Tentative and self.hits >= self._n_init:
-            self.state = TrackState.Confirmed
-
-    def _stop_comm_thread(self):
-        self.logger.debug('Stopping COMM thread for track {}'.format(self.track_id))
-        self._run_thread = False
-        self.queue_comm.put(Command(Command.STOP, None))
-        self.logger.debug('Queue for track#{} has {} members.'.format(self.track_id, self.queue_comm.qsize()))
-        self.logger.debug('Joining queue for track#{}.'.format(self.track_id))
-        self.queue_comm.join()
-        self.logger.debug('Joining COMM thread for track#{}.'.format(self.track_id))
-        self._thread_comm.join()
+        if self.get_state() == TrackState.Tentative and self.hits >= self._n_init:
+            self.set_state(TrackState.Confirmed)
 
     def mark_missed(self):
         """Mark this track as missed (no association at the current time step)."""
-        if self.state == TrackState.Tentative:
-            self.state = TrackState.Deleted
-            self._stop_comm_thread()
+        if self.get_state() == TrackState.Tentative:
+            self.set_state(TrackState.Deleted)
+            self.logger.debug(
+                "Track#{} is marked as deleted.".format(self.track_id))
         elif self.time_since_update > self._max_age:
-            self.state = TrackState.Deleted
-            self._stop_comm_thread()
+            self.set_state(TrackState.Deleted)
+            self.logger.debug(
+                "Track#{} is marked as deleted.".format(self.track_id))
+        # self._stop_comm_thread()
 
     def is_tentative(self):
         """Returns True if this track is tentative (unconfirmed)."""
-        return self.state == TrackState.Tentative
+        return self.get_state() == TrackState.Tentative
 
     def is_confirmed(self):
         """Returns True if this track is confirmed."""
-        return self.state == TrackState.Confirmed
+        return self.get_state() == TrackState.Confirmed
 
     def is_deleted(self):
         """Returns True if this track is dead and should be deleted."""
-        return self.state == TrackState.Deleted
+        return self.get_state() == TrackState.Deleted
 
     def get_cls_id(self):
         """Returns the class id of this track"""
@@ -265,7 +274,8 @@ class Track:
         # return compressed, len(uncompressed), len(compressed)
 
     def post_nparr(self, cmd: Command):
-        self.logger.info('Sending the data for track: {}'.format(self.track_id))
+        self.logger.info(
+            'Sending the data for track#{}'.format(self.track_id))
         server_address = "http://" + self.client_cfg.Server_IP + \
             ":" + str(self.client_cfg.Server_Socket)
         bbox_tlwh = "{:.0f},{:.0f},{:.0f},{:.0f}".format(
@@ -304,10 +314,9 @@ class Track:
                     data=cmd.cmp_feature,
                     headers={"Content-Type": "application/octet-stream"},
                 ) as response:
-                    # TODO: Fix the error handling and logging.
                     cmd.response = response.json()
             except Exception as e:
-                self.logger.debug("The error is : {}".format(str(e)))
+                self.logger.debug("While sending the payload for track#{}, the error is caught: {}".format(str(e)))
 
         # Check if need also to send bbox img or not.
         if cmd.cmp_image is not None and cmd.response is not None:
@@ -326,12 +335,12 @@ class Track:
                             headers={
                                 "Content-Type": "application/octet-stream"},
                         ) as response:
-                            # TODO: Fix the error handling and logging.
                             cmd.img_response = response.json()
                     except Exception as e:
-                        self.logger.debug("The error is : {}".format(str(e)))
+                        self.logger.debug("While sending the image for track#{}, the error is caught: {}".format(str(e)))
             else:
-                self.logger.debug("There was an error on server side to save the data.")
+                self.logger.debug(
+                    "There was an error on server side to save the data.")
 
         return cmd
 
@@ -381,34 +390,62 @@ class Track:
                     final_global_id = self.arbiter(recv_global_id)
                     self._set_track_id(final_global_id)
 
+    def set_thread_status(self, state: bool):
+        self.comm_thread_status_lock.acquire()
+        self._run_thread = state
+        self.comm_thread_status_lock.release()
+
+    def get_thread_status(self):
+        self.comm_thread_status_lock.acquire()
+        state = self._run_thread
+        self.comm_thread_status_lock.release()
+        return state
+
     def communicate(self):
         if self.client_cfg is not None:
-            while True: #self._run_thread:
+            while True:  # self._run_thread:
                 try:
-                    cmd = self.queue_comm.get(block=True)
+                    cmd = self.queue_comm.get()
+                    if cmd is None:
+                        break
+                    '''
                     if cmd.cmd_type == Command.STOP:
                         # Flush the queue if it is not empty.
                         while not self.queue_comm.empty():
                             try:
-                                cmd = self.queue_comm.get()
+                                cmd = self.queue_comm.get(block=True)
                                 self.logger.debug("Skipped command `{}` for Track: {}".format(
                                     cmd.cmd_type ,self.track_id))
                                 self.queue_comm.task_done()
                             except Empty:
-                                continue
-
+                                break
                         self.queue_comm.task_done()
                         break
-
+                    '''
                     # Let's filter out the objects we want to the server
                     if self.get_cls_id() in self.filtered_classes:
+                        self.logger.debug(
+                            "Compressing payload for track#{}.".format(self.track_id))
                         cmd = self.compress_nparr(cmd)
+                        self.logger.debug(
+                            "Posting payload for track#{}.".format(self.track_id))
                         cmd = self.post_nparr(cmd)
+                        self.logger.debug(
+                            "Processing the request for track#{}.".format(self.track_id))
                         self.process_response(cmd)
 
                     self.queue_comm.task_done()
-                except Empty:
-                    pass
+                    self.logger.debug(
+                        "Task is done for track#{}.".format(self.track_id))
+
+                except Exception as error:
+                    self.logger.debug(
+                        "Received exception {} for track#{}.".format(str(error), self.track_id))
+
+                #if not self.get_thread_status():
+                #    self.logger.debug(
+                #        "Thread COMM of track#{} has stopped.".format(self.track_id))
+                #    break
         else:
-            print("!> Client config is not set. System is based on local ReID for track:{}".format(
+            print("!> Client config is not set. System is based on local ReID for track#{}".format(
                 self.track_id))
