@@ -127,7 +127,8 @@ class Track:
         self.queue_comm = Queue()
 
         self.set_thread_status(True)
-        self._thread_comm = Thread(target=self.communicate)
+        self._thread_comm = Thread(
+            target=self.communicate, name="Track_COMM:{}".format(self.track_id))
         self._thread_comm.start()
 
         self.global_id_history = {}
@@ -230,10 +231,12 @@ class Track:
         """Mark this track as missed (no association at the current time step)."""
         if self.get_state() == TrackState.Tentative:
             self.set_state(TrackState.Deleted)
+            self.queue_comm.put_nowait(None)
             self.logger.debug(
                 "Track#{} is marked as deleted.".format(self.track_id))
         elif self.time_since_update > self._max_age:
             self.set_state(TrackState.Deleted)
+            self.queue_comm.put_nowait(None)
             self.logger.debug(
                 "Track#{} is marked as deleted.".format(self.track_id))
         # self._stop_comm_thread()
@@ -316,7 +319,8 @@ class Track:
                 ) as response:
                     cmd.response = response.json()
             except Exception as e:
-                self.logger.debug("While sending the payload for track#{}, the error is caught: {}".format(str(e)))
+                self.logger.debug(
+                    "While sending the payload for track#{}, the error is caught: {}".format(str(e)))
 
         # Check if need also to send bbox img or not.
         if cmd.cmp_image is not None and cmd.response is not None:
@@ -337,7 +341,8 @@ class Track:
                         ) as response:
                             cmd.img_response = response.json()
                     except Exception as e:
-                        self.logger.debug("While sending the image for track#{}, the error is caught: {}".format(str(e)))
+                        self.logger.debug(
+                            "While sending the image for track#{}, the error is caught: {}".format(str(e)))
             else:
                 self.logger.debug(
                     "There was an error on server side to save the data.")
@@ -403,10 +408,15 @@ class Track:
 
     def communicate(self):
         if self.client_cfg is not None:
+            self.logger.debug(
+                'The COMM thread of track#{} is started...'.format(self.track_id))
             while True:  # self._run_thread:
                 try:
-                    cmd = self.queue_comm.get()
+                    cmd = self.queue_comm.get(timeout=1)
                     if cmd is None:
+                        self.logger.debug(
+                            'None is captured for track#{}'.format(self.track_id))
+                        self.queue_comm.task_done()
                         break
                     '''
                     if cmd.cmd_type == Command.STOP:
@@ -434,15 +444,16 @@ class Track:
                             "Processing the request for track#{}.".format(self.track_id))
                         self.process_response(cmd)
 
-                    self.queue_comm.task_done()
-                    self.logger.debug(
-                        "Task is done for track#{}.".format(self.track_id))
+                        self.queue_comm.task_done()
+                        self.logger.debug(
+                            "Task is done for track#{}.".format(self.track_id))
 
                 except Exception as error:
                     self.logger.debug(
                         "Received exception {} for track#{}.".format(str(error), self.track_id))
+                    continue
 
-                #if not self.get_thread_status():
+                # if not self.get_thread_status():
                 #    self.logger.debug(
                 #        "Thread COMM of track#{} has stopped.".format(self.track_id))
                 #    break

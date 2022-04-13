@@ -10,6 +10,7 @@ from . import linear_assignment
 from . import iou_matching
 from .track import Track
 
+
 class Tracker:
     """
     This is the multi-target tracker.
@@ -62,16 +63,56 @@ class Tracker:
 
         self.client_cfg = client_cfg
 
-        self.logger= logger
+        self.logger = logger
 
         self.trackers_lock = Semaphore()
-        self._thread_comm = Thread(target=self.deleted_track_collector)
-        self._thread_comm.start()
+        self.read_trackers_status_lock = Semaphore()
+        self.read_all_tracks = False
+        self._thread_comm_collector = Thread(
+            target=self.deleted_track_collector, name="Track_Thread_Collector")
+        self._thread_comm_collector.start()
 
     # def _run_comm_async(self):
     #    asyncio.set_event_loop(self.event_loop)
     #    self.event_loop.run_forever()
     #    self._thread_event_loop.join()
+
+    def should_read_all_tracks(self):
+        self.read_trackers_status_lock.acquire()
+        status = self.read_all_tracks
+        self.read_trackers_status_lock.release()
+        return status
+
+    def update_read_all_tracks_status(self, status):
+        self.read_trackers_status_lock.acquire()
+        self.read_all_tracks = status
+        self.read_trackers_status_lock.release()
+
+    def shuting_down_the_tracker(self):
+        self.logger.info('Shouting down tracker...')
+
+        self.trackers_lock.acquire()
+        for track in self.all_tracks:
+            self.logger.debug(
+                'Inserting None into Q of track#{}'.format(track.track_id))
+            track.queue_comm.put(None)
+        self.trackers_lock.release()
+
+        self.update_read_all_tracks_status(True)
+
+        live_process = []
+        self.trackers_lock.acquire()
+        for track in self.all_tracks:
+            live_process.append(track._thread_comm)
+        self.trackers_lock.release()
+
+        while live_process:
+            live_process = [p for p in live_process if p.is_alive()]
+
+
+        self.logger.info('Joining the tracker thread...')
+        while self._thread_comm_collector.is_alive():
+            self._thread_comm_collector.join(0.1)
 
     def update_all_track_list(self, val):
         self.trackers_lock.acquire()
@@ -85,21 +126,31 @@ class Tracker:
         while True:
             tmp_track_list = []
             should_be_added = True
-            for track in self.all_tracks:
-                if track.is_deleted():
-                    self.logger.debug('Stopping COMM thread for track#{}'.format(track.track_id))
-                    track.logger.debug('Queue for track#{} has {} members.'.format(track.track_id, track.queue_comm.qsize()))
+            self.trackers_lock.acquire()
+            current_track = self.all_tracks
+            self.trackers_lock.release()
+            
+            for track in current_track:
+                if track.is_deleted() or self.should_read_all_tracks():
+                    self.logger.debug(
+                        'Stopping COMM thread for track#{}'.format(track.track_id))
+                    track.logger.debug('Queue for track#{} has {} members.'.format(
+                        track.track_id, track.queue_comm.qsize()))
                     if track.queue_comm.empty():
                         track.set_thread_status(False)
-                        track.logger.debug('Trying to join the queue of track#{}.'.format(track.track_id))
+                        track.logger.debug(
+                            'Trying to join the queue of track#{}.'.format(track.track_id))
                         track.queue_comm.join()
-                        track.logger.debug('Trying to join the COMM thread of track#{}.'.format(track.track_id))
+                        track.logger.debug(
+                            'Trying to join the COMM thread of track#{}.'.format(track.track_id))
                         track._thread_comm.join(0.1)
                         should_be_added = False
-                        track.logger.debug('The COMM thread of track#{} is officially dead!'.format(track.track_id))
+                        track.logger.debug(
+                            'The COMM thread of track#{} is officially dead!'.format(track.track_id))
                     else:
-                        #There are some cases that thread is full but `get` is blocking.
-                        track.logger.debug("Couldn't stop queue of track#{} as it was not empty. It will be tried later".format(track.track_id))
+                        # There are some cases that thread is full but `get` is blocking.
+                        track.logger.debug(
+                            "Couldn't stop queue of track#{} as it was not empty. It will be tried later".format(track.track_id))
                         while not track.queue_comm.empty():
                             try:
                                 _ = track.queue_comm.get_nowait()
@@ -108,10 +159,14 @@ class Tracker:
                                 break
                 if should_be_added:
                     tmp_track_list.append(track)
+            
+            if self.should_read_all_tracks() and len(tmp_track_list) == 0:
+                break
+
+
             self.update_all_track_list(tmp_track_list)
             sleep(2)
 
-    
     def predict(self):
         """Propagate track state distributions one time step forward.
 
