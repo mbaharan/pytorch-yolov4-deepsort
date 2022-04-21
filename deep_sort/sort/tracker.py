@@ -68,6 +68,7 @@ class Tracker:
         self.trackers_lock = Semaphore()
         self.read_trackers_status_lock = Semaphore()
         self.read_all_tracks = False
+        self._run_thread_collector = True
         self._thread_comm_collector = Thread(
             target=self.deleted_track_collector, name="Track_Thread_Collector")
         self._thread_comm_collector.start()
@@ -123,7 +124,7 @@ class Tracker:
         self.trackers_lock.release()
 
     def deleted_track_collector(self):
-        while True:
+        while self._run_thread_collector:
             tmp_track_list = []
             should_be_added = True
             self.trackers_lock.acquire()
@@ -141,6 +142,8 @@ class Tracker:
                         track.logger.debug(
                             'Trying to join the queue of track#{}.'.format(track.track_id))
                         track.queue_comm.join()
+                        # I've added these sleep hear to make sure there is not race between `get` and `join` function of Q to get its thread lock.
+                        sleep(1)
                         track.logger.debug(
                             'Trying to join the COMM thread of track#{}.'.format(track.track_id))
                         track._thread_comm.join(0.1)
@@ -161,11 +164,12 @@ class Tracker:
                     tmp_track_list.append(track)
             
             if self.should_read_all_tracks() and len(tmp_track_list) == 0:
-                break
+                self._run_thread_collector = False
 
 
-            self.update_all_track_list(tmp_track_list)
-            sleep(2)
+            #if len(tmp_track_list) > 0:
+            #    self.update_all_track_list(tmp_track_list)
+            sleep(0.1)
 
     def predict(self):
         """Propagate track state distributions one time step forward.

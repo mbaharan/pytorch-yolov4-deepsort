@@ -268,7 +268,7 @@ class Track:
         cmd.cmp_feature = zlib.compress(uncompressed)
         if cmd.img_bbox is not None:
             bytestream_img = io.BytesIO()
-            np.save(bytestream_img, cmd.img_bbox)
+            np.save(bytestream_img, cmd.img_bbox) 
             uncompressed_img = bytestream_img.getvalue()
             cmd.cmp_image = zlib.compress(uncompressed_img)
 
@@ -413,26 +413,30 @@ class Track:
             while True:  # self._run_thread:
                 try:
                     cmd = self.queue_comm.get(timeout=1)
-                    if cmd is None:
-                        self.logger.debug(
-                            'None is captured for track#{}'.format(self.track_id))
-                        self.queue_comm.task_done()
-                        break
-                    '''
-                    if cmd.cmd_type == Command.STOP:
-                        # Flush the queue if it is not empty.
-                        while not self.queue_comm.empty():
-                            try:
-                                cmd = self.queue_comm.get(block=True)
-                                self.logger.debug("Skipped command `{}` for Track: {}".format(
-                                    cmd.cmd_type ,self.track_id))
-                                self.queue_comm.task_done()
-                            except Empty:
-                                break
-                        self.queue_comm.task_done()
-                        break
-                    '''
-                    # Let's filter out the objects we want to the server
+                except Empty:
+                    continue
+
+                if cmd is None:
+                    self.queue_comm.task_done()
+                    self.logger.debug(
+                        'None is captured for track#{}'.format(self.track_id))
+                    break
+                '''
+                if cmd.cmd_type == Command.STOP:
+                    # Flush the queue if it is not empty.
+                    while not self.queue_comm.empty():
+                        try:
+                            cmd = self.queue_comm.get(block=True)
+                            self.logger.debug("Skipped command `{}` for Track: {}".format(
+                                cmd.cmd_type ,self.track_id))
+                            self.queue_comm.task_done()
+                        except Empty:
+                            break
+                    self.queue_comm.task_done()
+                    break
+                '''
+                # Let's filter out the objects we want to the server
+                try:
                     if self.get_cls_id() in self.filtered_classes:
                         self.logger.debug(
                             "Compressing payload for track#{}.".format(self.track_id))
@@ -443,7 +447,6 @@ class Track:
                         self.logger.debug(
                             "Processing the request for track#{}.".format(self.track_id))
                         self.process_response(cmd)
-
                         self.queue_comm.task_done()
                         self.logger.debug(
                             "Task is done for track#{}.".format(self.track_id))
@@ -451,12 +454,18 @@ class Track:
                 except Exception as error:
                     self.logger.debug(
                         "Received exception {} for track#{}.".format(str(error), self.track_id))
+                    # Task is not actually done, but I have to call it, otherwise the Q join function will be hung up.
+                    self.queue_comm.task_done()
                     continue
+                
+                #self.queue_comm.task_done()
 
                 # if not self.get_thread_status():
                 #    self.logger.debug(
                 #        "Thread COMM of track#{} has stopped.".format(self.track_id))
                 #    break
+           
         else:
+            self.queue_comm.task_done()
             print("!> Client config is not set. System is based on local ReID for track#{}".format(
                 self.track_id))
