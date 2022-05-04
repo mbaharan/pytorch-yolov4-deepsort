@@ -231,12 +231,12 @@ class Track:
         """Mark this track as missed (no association at the current time step)."""
         if self.get_state() == TrackState.Tentative:
             self.set_state(TrackState.Deleted)
-            self.queue_comm.put_nowait(None)
+            #self.queue_comm.put_nowait(None)
             self.logger.debug(
                 "Track#{} is marked as deleted.".format(self.track_id))
         elif self.time_since_update > self._max_age:
             self.set_state(TrackState.Deleted)
-            self.queue_comm.put_nowait(None)
+            #self.queue_comm.put_nowait(None)
             self.logger.debug(
                 "Track#{} is marked as deleted.".format(self.track_id))
         # self._stop_comm_thread()
@@ -395,11 +395,13 @@ class Track:
                     final_global_id = self.arbiter(recv_global_id)
                     self._set_track_id(final_global_id)
 
+    #Not used right now.
     def set_thread_status(self, state: bool):
         self.comm_thread_status_lock.acquire()
         self._run_thread = state
         self.comm_thread_status_lock.release()
-
+    
+    #Not used right now.
     def get_thread_status(self):
         self.comm_thread_status_lock.acquire()
         state = self._run_thread
