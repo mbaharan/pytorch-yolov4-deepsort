@@ -124,9 +124,9 @@ class Track:
 
         self.filtered_classes = filtered_classes
 
+        self.should_be_joined_forcefully = False
         self.queue_comm = Queue()
 
-        self.set_thread_status(True)
         self._thread_comm = Thread(
             target=self.communicate, name="Track_COMM:{}".format(self.track_id))
         self._thread_comm.start()
@@ -395,16 +395,14 @@ class Track:
                     final_global_id = self.arbiter(recv_global_id)
                     self._set_track_id(final_global_id)
 
-    #Not used right now.
-    def set_thread_status(self, state: bool):
+    def set_to_joined_forcefully(self, state: bool):
         self.comm_thread_status_lock.acquire()
-        self._run_thread = state
+        self.should_be_joined_forcefully = state
         self.comm_thread_status_lock.release()
     
-    #Not used right now.
-    def get_thread_status(self):
+    def get_to_joined_forcefully(self):
         self.comm_thread_status_lock.acquire()
-        state = self._run_thread
+        state = self.should_be_joined_forcefully
         self.comm_thread_status_lock.release()
         return state
 

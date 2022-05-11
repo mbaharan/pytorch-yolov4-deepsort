@@ -92,12 +92,12 @@ class Tracker:
     def shuting_down_the_tracker(self):
         self.logger.info('Shouting down tracker...')
 
-        self.trackers_lock.acquire()
-        for track in self.all_tracks:
-            self.logger.debug(
-                'Inserting None into Q of track#{}'.format(track.track_id))
-            track.queue_comm.put(None)
-        self.trackers_lock.release()
+        # self.trackers_lock.acquire()
+        # for track in self.all_tracks:
+        # self.logger.debug(
+        #    'Inserting None into Q of track#{}'.format(track.track_id))
+        # track.queue_comm.put(None)
+        # self.trackers_lock.release()
 
         self.update_read_all_tracks_status(True)
 
@@ -109,7 +109,7 @@ class Tracker:
 
         while live_process:
             live_process = [p for p in live_process if p.is_alive()]
-
+            # Let's give time to queue to see None
 
         self.logger.info('Joining the tracker thread...')
         while self._thread_comm_collector.is_alive():
@@ -130,15 +130,22 @@ class Tracker:
             self.trackers_lock.acquire()
             current_track = self.all_tracks
             self.trackers_lock.release()
-            
+
             for track in current_track:
                 if track.is_deleted() or self.should_read_all_tracks():
                     self.logger.debug(
                         'Stopping COMM thread for track#{}'.format(track.track_id))
                     track.logger.debug('Queue for track#{} has {} members.'.format(
                         track.track_id, track.queue_comm.qsize()))
+                    
+                    if self.should_read_all_tracks():
+                        if not track.get_to_joined_forcefully():
+                            track.set_to_joined_forcefully(True)
+                            self.logger.debug(
+                                'Inserting None into Q of track#{}'.format(track.track_id))
+                            track.queue_comm.put(None, block=True)
+
                     if track.queue_comm.empty():
-                        track.set_thread_status(False)
                         track.logger.debug(
                             'Trying to join the queue of track#{}.'.format(track.track_id))
                         track.queue_comm.join()
@@ -154,20 +161,19 @@ class Tracker:
                         # There are some cases that thread is full but `get` is blocking.
                         track.logger.debug(
                             "Couldn't stop queue of track#{} as it was not empty. It will be tried later".format(track.track_id))
-                        while not track.queue_comm.empty():
-                            try:
-                                _ = track.queue_comm.get_nowait()
-                                track.queue_comm.task_done()
-                            except Empty:
-                                break
+                        #while not track.queue_comm.empty():
+                        #    try:
+                        #        _ = track.queue_comm.get_nowait()
+                        #        track.queue_comm.task_done()
+                        #    except Empty:
+                        #        break
                 if should_be_added:
                     tmp_track_list.append(track)
-            
+
             if self.should_read_all_tracks() and len(tmp_track_list) == 0:
                 self._run_thread_collector = False
 
-
-            #if len(tmp_track_list) > 0:
+            # if len(tmp_track_list) > 0:
             #    self.update_all_track_list(tmp_track_list)
             sleep(0.1)
 
