@@ -7,7 +7,7 @@ import zlib
 import requests
 import numpy as np
 import io
-from threading import Thread
+from threading import Thread, Event
 from queue import Empty, Queue
 from api_utils.interfaces import Command
 from threading import Semaphore
@@ -88,6 +88,7 @@ class Track:
         cls_id=None,
         logger=None,
         client_cfg=None,
+        shut_down_event: Event = None,
         # Only these classes will be sent to server for global reID.
         filtered_classes=[0]
     ):
@@ -125,11 +126,13 @@ class Track:
         self.filtered_classes = filtered_classes
 
         self.should_be_joined_forcefully = False
+        self.shut_down_event = shut_down_event
         self.queue_comm = Queue()
 
         self._thread_comm = Thread(
             target=self.communicate, name="Track_COMM:{}".format(self.track_id))
-        self._thread_comm.start()
+        self._thread_comm.setDaemon(False)
+        # self._thread_comm.start()
 
         self.global_id_history = {}
         self.global_id_hit = {}
@@ -231,12 +234,12 @@ class Track:
         """Mark this track as missed (no association at the current time step)."""
         if self.get_state() == TrackState.Tentative:
             self.set_state(TrackState.Deleted)
-            #self.queue_comm.put_nowait(None)
+            # self.queue_comm.put_nowait(None)
             self.logger.debug(
                 "Track#{} is marked as deleted.".format(self.track_id))
         elif self.time_since_update > self._max_age:
             self.set_state(TrackState.Deleted)
-            #self.queue_comm.put_nowait(None)
+            # self.queue_comm.put_nowait(None)
             self.logger.debug(
                 "Track#{} is marked as deleted.".format(self.track_id))
         # self._stop_comm_thread()
@@ -268,7 +271,7 @@ class Track:
         cmd.cmp_feature = zlib.compress(uncompressed)
         if cmd.img_bbox is not None:
             bytestream_img = io.BytesIO()
-            np.save(bytestream_img, cmd.img_bbox) 
+            np.save(bytestream_img, cmd.img_bbox)
             uncompressed_img = bytestream_img.getvalue()
             cmd.cmp_image = zlib.compress(uncompressed_img)
 
@@ -399,7 +402,7 @@ class Track:
         self.comm_thread_status_lock.acquire()
         self.should_be_joined_forcefully = state
         self.comm_thread_status_lock.release()
-    
+
     def get_to_joined_forcefully(self):
         self.comm_thread_status_lock.acquire()
         state = self.should_be_joined_forcefully
@@ -410,17 +413,17 @@ class Track:
         if self.client_cfg is not None:
             self.logger.debug(
                 'The COMM thread of track#{} is started...'.format(self.track_id))
-            while True:  # self._run_thread:
+            while not self.shut_down_event.is_set():  # self._run_thread:
                 try:
                     cmd = self.queue_comm.get(timeout=1)
                 except Empty:
                     continue
 
-                if cmd is None:
-                    self.queue_comm.task_done()
-                    self.logger.debug(
-                        'None is captured for track#{}'.format(self.track_id))
-                    break
+                #if cmd is None:
+                #    self.queue_comm.task_done()
+                #    self.logger.debug(
+                #        'None is captured for track#{}'.format(self.track_id))
+                #    break
                 '''
                 if cmd.cmd_type == Command.STOP:
                     # Flush the queue if it is not empty.
@@ -457,14 +460,14 @@ class Track:
                     # Task is not actually done, but I have to call it, otherwise the Q join function will be hung up.
                     self.queue_comm.task_done()
                     continue
-                
-                #self.queue_comm.task_done()
+
+                # self.queue_comm.task_done()
 
                 # if not self.get_thread_status():
                 #    self.logger.debug(
                 #        "Thread COMM of track#{} has stopped.".format(self.track_id))
                 #    break
-           
+
         else:
             self.queue_comm.task_done()
             print("!> Client config is not set. System is based on local ReID for track#{}".format(

@@ -1,7 +1,7 @@
 # vim: expandtab:ts=4:sw=4
 from __future__ import absolute_import
 from queue import Empty
-from threading import Semaphore
+from threading import Semaphore, Event
 import numpy as np
 from threading import Thread
 from time import sleep
@@ -69,6 +69,7 @@ class Tracker:
         self.read_trackers_status_lock = Semaphore()
         self.read_all_tracks = False
         self._run_thread_collector = True
+        self.shut_down_event = Event()
         self._thread_comm_collector = Thread(
             target=self.deleted_track_collector, name="Track_Thread_Collector")
         self._thread_comm_collector.start()
@@ -100,20 +101,41 @@ class Tracker:
         # self.trackers_lock.release()
 
         self.update_read_all_tracks_status(True)
+        
+        #Let other tracks know that they have to be shut down.
+        self.shut_down_event.set()
 
         live_process = []
         self.trackers_lock.acquire()
         for track in self.all_tracks:
-            live_process.append(track._thread_comm)
+            live_process.append(track)
         self.trackers_lock.release()
 
         while live_process:
-            live_process = [p for p in live_process if p.is_alive()]
+            live_process = []
+            if track._thread_comm.is_alive():
+                while not track.queue_comm.empty():
+                    try:
+                        self.logger.info('Emptying Q of track#{}'.format(track.track_id))
+                        _ = track.queue_comm.get(timeout=0.1)
+                        track.queue_comm.task_done()
+                    except Empty:
+                        continue
+                else:
+                    self.logger.info('Forcing Q of track#{} to join...'.format(track.track_id))
+                    track.queue_comm.join()
+                    self.logger.info('Forcing Thread of track#{} to join...'.format(track.track_id))
+                    track._thread_comm.join()
+                live_process.append(track)
+            else:
+                del track
+
             # Let's give time to queue to see None
 
         self.logger.info('Joining the tracker thread...')
         while self._thread_comm_collector.is_alive():
             self._thread_comm_collector.join(0.1)
+        self.logger.info('Exiting from `shuting_down_the_tracker` function...')
 
     def update_all_track_list(self, val):
         self.trackers_lock.acquire()
@@ -124,7 +146,7 @@ class Tracker:
         self.trackers_lock.release()
 
     def deleted_track_collector(self):
-        while self._run_thread_collector:
+        while not self.shut_down_event.is_set():#self._run_thread_collector:
             tmp_track_list = []
             should_be_added = True
             self.trackers_lock.acquire()
@@ -143,20 +165,21 @@ class Tracker:
                             track.set_to_joined_forcefully(True)
                             self.logger.debug(
                                 'Inserting None into Q of track#{}'.format(track.track_id))
-                            track.queue_comm.put(None, block=True)
+                            #track.queue_comm.put(None, block=True)
 
                     if track.queue_comm.empty():
                         track.logger.debug(
                             'Trying to join the queue of track#{}.'.format(track.track_id))
                         track.queue_comm.join()
                         # I've added these sleep hear to make sure there is not race between `get` and `join` function of Q to get its thread lock.
-                        sleep(1)
+                        #sleep(1)
                         track.logger.debug(
                             'Trying to join the COMM thread of track#{}.'.format(track.track_id))
                         track._thread_comm.join(0.1)
                         should_be_added = False
                         track.logger.debug(
                             'The COMM thread of track#{} is officially dead!'.format(track.track_id))
+                        #del track
                     else:
                         # There are some cases that thread is full but `get` is blocking.
                         track.logger.debug(
@@ -270,7 +293,9 @@ class Tracker:
         mean, covariance = self.kf.initiate(detection.to_xyah())
 
         track = Track(
-            mean, covariance, self._next_id, self.n_init, self.max_age, detection.feature, detection.cls_id, self.logger, self.client_cfg)
+            mean, covariance, self._next_id, self.n_init, self.max_age, detection.feature, detection.cls_id, self.logger, self.client_cfg, self.shut_down_event)
+
+        track._thread_comm.start()
 
         self.tracks.append(track)
         self.update_all_track_list(track)
