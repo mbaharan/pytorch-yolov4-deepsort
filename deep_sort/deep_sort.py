@@ -70,11 +70,18 @@ class DeepSort(object):
             box = track.to_tlwh()
             x1, y1, x2, y2 = self._tlwh_to_xyxy(box)
             track_id = track.track_id
-            global_id = track.global_id
+            cls_id = track.cls_id
+
+            if len(track.last_features) < 1:
+                feature = None
+            else:
+                feature = track.last_features[-1]
+
             outputs.append(
-                np.array([x1, y1, x2, y2, track_id, global_id], dtype=np.int))
-        if len(outputs) > 0:
-            outputs = np.stack(outputs, axis=0)
+                [np.array([int(x1), int(y1), int(x2), int(y2)], dtype=object), track_id, cls_id, feature])
+            track.last_features = []
+        #if len(outputs) > 0:
+        #    outputs = np.stack(outputs, axis=0)
         return outputs
 
     def load_class_names(self, namesfile):
