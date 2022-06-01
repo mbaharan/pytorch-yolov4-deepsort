@@ -129,7 +129,7 @@ class Track:
         self.set_thread_status(True)
         self._thread_comm = Thread(
             target=self.communicate, name="Track_COMM:{}".format(self.track_id))
-        self._thread_comm.start()
+        #self._thread_comm.start()
 
         self.global_id_history = {}
         self.global_id_hit = {}
