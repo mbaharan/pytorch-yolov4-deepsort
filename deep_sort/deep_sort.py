@@ -78,7 +78,10 @@ class DeepSort(object):
                 feature = track.last_features[-1]
 
             outputs.append(
-                [np.array([int(x1), int(y1), int(x2), int(y2)], dtype=object), track_id, cls_id, feature])
+                [[int(x1), int(y1), int(x2), int(y2)], track_id, cls_id, feature])
+
+            #outputs.append(
+            #    [np.array([int(x1), int(y1), int(x2), int(y2)], dtype=np.int32), track_id, cls_id, feature])
             track.last_features = []
         #if len(outputs) > 0:
         #    outputs = np.stack(outputs, axis=0)

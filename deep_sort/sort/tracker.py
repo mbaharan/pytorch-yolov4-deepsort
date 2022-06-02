@@ -71,7 +71,7 @@ class Tracker:
         self._run_thread_collector = True
         self._thread_comm_collector = Thread(
             target=self.deleted_track_collector, name="Track_Thread_Collector")
-        self._thread_comm_collector.start()
+        #self._thread_comm_collector.start()
 
     # def _run_comm_async(self):
     #    asyncio.set_event_loop(self.event_loop)
